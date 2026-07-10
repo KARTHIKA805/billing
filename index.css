@@ -1,0 +1,172 @@
+:root {
+  --brand-bg: #7f1e28;
+  --brand-dark: #58121b;
+  --brand-accent: #e4b65a;
+  --brand-muted: #f8ede3;
+  --brand-surface: #fff5eb;
+  --brand-text-dark: #3c2216;
+  --brand-text-light: #f8f1ea;
+  --brand-border: #d8aa70;
+}
+
+body {
+  background-color: var(--brand-muted);
+  color: var(--brand-text-dark);
+}
+
+/* Custom animations */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scale-up {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+.animate-scale-up {
+  animation: scale-up 0.2s ease-out;
+}
+
+.thermal-receipt-print {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 0;
+  }
+
+  body {
+    margin: 0;
+    background: white !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .thermal-receipt-print,
+  .thermal-receipt-print * {
+    visibility: visible;
+  }
+
+  .thermal-receipt-print {
+    display: block !important;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 80mm;
+    max-width: 80mm;
+    padding: 4mm;
+    box-sizing: border-box;
+    font-family: 'Courier New', Courier, monospace;
+    color: #000;
+    background: white;
+    text-align: left;
+  }
+
+  .thermal-receipt-print__header {
+    text-align: center;
+    margin-bottom: 2mm;
+  }
+
+  .thermal-receipt-print__divider {
+    border-top: 1px dashed #000;
+    margin: 2mm 0;
+  }
+}
+
+.thermal-receipt-print {
+  width: min(80mm, 100%);
+  max-width: 80mm;
+  padding: 12px;
+  box-sizing: border-box;
+  font-family: 'Courier New', Courier, monospace;
+  color: #000;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+}
+
+.thermal-receipt-print__header {
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.thermal-receipt-print__divider {
+  border-top: 1px dashed #000;
+  margin: 8px 0;
+}
+
+.thermal-receipt-print__group {
+  page-break-inside: avoid;
+  break-inside: avoid;
+  margin-bottom: 8px;
+}
+
+/* Button utility classes for consistent sizing and spacing */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.btn-primary {
+  background: var(--brand-dark);
+  color: var(--brand-text-light);
+  border: none;
+  box-shadow: 0 6px 12px rgba(88,18,27,0.12);
+}
+.btn-primary:hover {
+  background: var(--brand-bg);
+}
+
+.btn-secondary {
+  background: #fff;
+  color: var(--brand-dark);
+  border: 1px solid var(--brand-border);
+}
+.btn-secondary:hover {
+  background: var(--brand-muted);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Category tile styles */
+.category-tile {
+  min-width: 72px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.category-tile img { border-radius: 8px; width: 64px; height: 48px; object-fit: cover; }
+.category-tile span { font-size: 12px; color: var(--brand-dark); }
+
