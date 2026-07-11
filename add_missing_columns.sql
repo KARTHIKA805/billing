@@ -27,5 +27,39 @@ drop policy if exists "Allow all access to sale_items" on sale_items;
 create policy "Allow all access to sale_items"
   on sale_items for all to public using (true) with check (true);
 
+-- Add image_url to categories table (safe: uses IF NOT EXISTS)
+alter table categories add column if not exists image_url text;
+
+-- Create Storage Bucket for Category Images
+insert into storage.buckets (id, name, public)
+values ('category-images', 'category-images', true)
+on conflict (id) do nothing;
+
+-- Set up RLS Policies for category-images Storage Bucket
+drop policy if exists "Allow public read access to category images" on storage.objects;
+create policy "Allow public read access to category images"
+  on storage.objects for select
+  to public
+  using (bucket_id = 'category-images');
+
+drop policy if exists "Allow public insert access to category images" on storage.objects;
+create policy "Allow public insert access to category images"
+  on storage.objects for insert
+  to public
+  with check (bucket_id = 'category-images');
+
+drop policy if exists "Allow public update access to category images" on storage.objects;
+create policy "Allow public update access to category images"
+  on storage.objects for update
+  to public
+  using (bucket_id = 'category-images')
+  with check (bucket_id = 'category-images');
+
+drop policy if exists "Allow public delete access to category images" on storage.objects;
+create policy "Allow public delete access to category images"
+  on storage.objects for delete
+  to public
+  using (bucket_id = 'category-images');
+
 -- Done!
-select 'Migration complete. Sales table now has all required columns.' as status;
+select 'Migration complete. Sales and categories tables and storage bucket now have all required columns/policies.' as status;

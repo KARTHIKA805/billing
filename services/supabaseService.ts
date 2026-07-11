@@ -21,28 +21,43 @@ export const getUser = async () => {
 export const getUserRole = async (user: any): Promise<UserRole> => {
     if (!user) return UserRole.ADMIN;
 
-    const metadataRole = user.user_metadata?.role ?? user.app_metadata?.role ?? user?.role;
-    if (typeof metadataRole === 'string') {
-        const normalizedRole = metadataRole.toLowerCase();
-        if (normalizedRole === UserRole.EMPLOYEE) return UserRole.EMPLOYEE;
-        if (normalizedRole === UserRole.ADMIN) return UserRole.ADMIN;
-    }
-
     if (!supabase || !user.id) return UserRole.ADMIN;
 
+    // Always verify the user still has an active row in user_profiles.
+    // This is the single source of truth — if an admin deletes the employee
+    // from the panel (which removes the user_profiles row), access is denied
+    // even though the Supabase Auth account still exists.
     try {
-        const { data, error } = await supabase
+        const { data: profile, error: profileError } = await supabase
             .from('user_profiles')
             .select('role')
             .eq('id', user.id)
             .maybeSingle();
 
-        if (!error && data?.role) {
-            const normalizedRole = String(data.role).toLowerCase();
+        if (profileError) {
+            console.warn('Failed to verify user profile:', profileError);
+            // Fall through to metadata-based role resolution on DB errors
+        } else if (!profile) {
+            // User has been deleted from the admin panel — revoke the session
+            await supabase.auth.signOut();
+            throw new Error('Your account has been deactivated. Please contact an administrator.');
+        } else {
+            // Profile exists — use its role as the authoritative source
+            const normalizedRole = String(profile.role).toLowerCase();
             return normalizedRole === UserRole.EMPLOYEE ? UserRole.EMPLOYEE : UserRole.ADMIN;
         }
-    } catch (error) {
-        console.warn('Failed to resolve role from user profile:', error);
+    } catch (err: any) {
+        // Re-throw our own access-denied errors so callers can display them
+        if (err?.message?.includes('deactivated')) throw err;
+        console.warn('Failed to resolve role from user profile:', err);
+    }
+
+    // Fallback: read role from Auth metadata (only reached when DB is unreachable)
+    const metadataRole = user.user_metadata?.role ?? user.app_metadata?.role ?? user?.role;
+    if (typeof metadataRole === 'string') {
+        const normalizedRole = metadataRole.toLowerCase();
+        if (normalizedRole === UserRole.EMPLOYEE) return UserRole.EMPLOYEE;
+        if (normalizedRole === UserRole.ADMIN) return UserRole.ADMIN;
     }
 
     return UserRole.ADMIN;
@@ -149,12 +164,8 @@ export const addCategory = async (name: string, imageFile?: File | null): Promis
         const path = `categories/${Date.now()}-${imageFile.name}`;
         const { data: uploadData, error: uploadError } = await supabase.storage.from('category-images').upload(path, imageFile as any, { upsert: true });
         if (uploadError) {
-            console.warn('Category image upload failed:', uploadError.message || uploadError);
-            // If the bucket is missing, warn but continue so categories can still be created without images.
-            if ((uploadError as any)?.status === 400 || (uploadError as any)?.message?.toLowerCase().includes('bucket')) {
-                console.warn('Storage bucket "category-images" not found. Create the bucket in Supabase Storage to enable image uploads.');
-            }
-            // otherwise continue without image
+            console.error('Category image upload failed:', uploadError.message || uploadError);
+            throw new Error(`Failed to upload category image: ${uploadError.message}. Make sure the "category-images" bucket exists in Supabase Storage.`);
         } else {
             const { data: urlData } = supabase.storage.from('category-images').getPublicUrl(path);
             imageUrl = urlData.publicUrl || null;
@@ -190,10 +201,8 @@ export const updateCategory = async (id: string, name: string, imageFile?: File 
         const path = `categories/${Date.now()}-${imageFile.name}`;
         const { data: uploadData, error: uploadError } = await supabase.storage.from('category-images').upload(path, imageFile as any, { upsert: true });
         if (uploadError) {
-            console.warn('Category image upload failed:', uploadError.message || uploadError);
-            if ((uploadError as any)?.status === 400 || (uploadError as any)?.message?.toLowerCase().includes('bucket')) {
-                console.warn('Storage bucket "category-images" not found. Create the bucket in Supabase Storage to enable image uploads.');
-            }
+            console.error('Category image upload failed:', uploadError.message || uploadError);
+            throw new Error(`Failed to upload category image: ${uploadError.message}. Make sure the "category-images" bucket exists in Supabase Storage.`);
         } else {
             const { data: urlData } = supabase.storage.from('category-images').getPublicUrl(path);
             imageUrl = urlData.publicUrl || null;
@@ -294,6 +303,9 @@ export const updateIngredient = async (ingredient: Ingredient) => {
 
 export const deleteIngredient = async (id: string) => {
     if (!supabase) throw new Error('No DB');
+    // Nullify ingredient_id in inventory_adjustments to avoid foreign key constraint errors
+    await supabase.from('inventory_adjustments').update({ ingredient_id: null }).eq('ingredient_id', id);
+    
     const { error } = await supabase.from('ingredients').delete().eq('id', id);
     if (error) throw error;
 };
@@ -303,7 +315,10 @@ export const adjustProductStock = async (productId: string, adjustment: number, 
     const { data: product, error: prodError } = await supabase.from('products').select('stock').eq('id', productId).single();
     if (prodError) throw prodError;
     if (!product) throw new Error('Product not found');
+    
     const newStock = Number(product.stock) + adjustment;
+    if (newStock < 0) throw new Error('Cannot reduce stock below zero.');
+
     const { error: updateError } = await supabase.from('products').update({ stock: newStock }).eq('id', productId);
     if (updateError) throw updateError;
     const { error: adjError } = await supabase.from('inventory_adjustments').insert({
@@ -321,7 +336,10 @@ export const adjustIngredientStock = async (ingredientId: string, adjustment: nu
     const { data: ingredient, error: ingError } = await supabase.from('ingredients').select('current_stock').eq('id', ingredientId).single();
     if (ingError) throw ingError;
     if (!ingredient) throw new Error('Ingredient not found');
+    
     const newStock = Number(ingredient.current_stock) + adjustment;
+    if (newStock < 0) throw new Error('Cannot reduce ingredient stock below zero.');
+
     const { error: updateError } = await supabase.from('ingredients').update({ current_stock: newStock }).eq('id', ingredientId);
     if (updateError) throw updateError;
     const { error: adjError } = await supabase.from('inventory_adjustments').insert({
@@ -346,6 +364,15 @@ export const addCustomer = async (customer: Omit<Customer, 'id' | 'joinDate' | '
     const { data, error } = await supabase.from('customers').insert(dbPayload).select().single();
     if (error) throw error;
     return data;
+};
+
+export const deleteCustomer = async (id: string) => {
+    if (!supabase) throw new Error('No DB');
+    // Nullify customer_id in sales to avoid foreign key constraint errors
+    await supabase.from('sales').update({ customer_id: null }).eq('customer_id', id);
+    
+    const { error } = await supabase.from('customers').delete().eq('id', id);
+    if (error) throw error;
 };
 
 // Sales
@@ -397,9 +424,10 @@ export const createSale = async (sale: SaleRecord) => {
 
     // 3. Update Stock
     for (const item of sale.items) {
-        const { data: prod } = await supabase.from('products').select('stock').eq('id', item.id).single();
+        const { data: prod } = await supabase.from('products').select('stock, name').eq('id', item.id).single();
         if (prod) {
-            await supabase.from('products').update({ stock: prod.stock - item.quantity }).eq('id', item.id);
+            const updatedStock = Math.max(0, prod.stock - item.quantity);
+            await supabase.from('products').update({ stock: updatedStock }).eq('id', item.id);
         }
     }
 
@@ -419,7 +447,19 @@ export const createSale = async (sale: SaleRecord) => {
 
 export const getSales = async (): Promise<SaleRecord[]> => {
     if (!supabase) return [];
-    // Simplified fetch for dashboard (last 50 sales)
+
+    const { data: productsData, error: productsError } = await supabase
+        .from('products')
+        .select('id, name, category, price, cost, stock, min_stock, unit')
+        .order('name', { ascending: true });
+
+    const productById = new Map<string, any>();
+    if (!productsError && productsData) {
+        productsData.forEach((product: any) => {
+            productById.set(product.id, product);
+        });
+    }
+
     const { data, error } = await supabase
         .from('sales')
         .select(`
@@ -431,7 +471,7 @@ export const getSales = async (): Promise<SaleRecord[]> => {
 
     if (error) throw error;
 
-    return data.map((s: any) => ({
+    return (data || []).map((s: any) => ({
         id: s.id,
         timestamp: new Date(s.timestamp),
         subtotal: Number(s.subtotal),
@@ -444,13 +484,20 @@ export const getSales = async (): Promise<SaleRecord[]> => {
         pointsEarned: Number(s.points_earned),
         pointsRedeemed: Number(s.points_redeemed),
         discountAmount: Number(s.discount_amount),
-        items: s.sale_items.map((i: any) => ({
-            id: i.product_id,
-            name: i.product_name,
-            price: Number(i.price_at_sale),
-            quantity: Number(i.quantity),
-            category: 'Unknown' // Not joined, simplified
-        }))
+        items: (s.sale_items || []).map((i: any) => {
+            const product = productById.get(i.product_id);
+            return {
+                id: i.product_id,
+                name: i.product_name || product?.name || 'Unknown item',
+                price: Number(i.price_at_sale),
+                cost: Number(product?.cost ?? 0),
+                quantity: Number(i.quantity),
+                category: product?.category || 'Unknown',
+                stock: Number(product?.stock ?? 0),
+                minStock: Number(product?.min_stock ?? 0),
+                unit: product?.unit || 'unit'
+            };
+        })
     }));
 };
 

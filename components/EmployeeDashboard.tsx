@@ -37,18 +37,32 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ sales, products, 
   const todaySales = sales.filter(sale => isToday(sale.timestamp));
   const todayCount = todaySales.length;
   const todayRevenue = todaySales.reduce((sum, sale) => sum + sale.total, 0);
+  const getItemProfit = (item: SaleRecord['items'][number]) => {
+    const price = Number(item?.price ?? 0);
+    const cost = Number(item?.cost ?? 0);
+    const quantity = Number(item?.quantity ?? 0);
+    if (!Number.isFinite(price) || !Number.isFinite(cost) || !Number.isFinite(quantity)) return 0;
+    return (price - cost) * quantity;
+  };
+  const getItemRevenue = (item: SaleRecord['items'][number]) => {
+    const price = Number(item?.price ?? 0);
+    const quantity = Number(item?.quantity ?? 0);
+    if (!Number.isFinite(price) || !Number.isFinite(quantity)) return 0;
+    return price * quantity;
+  };
 
   const totalProfit = sales.reduce((sum, sale) => {
-    return sum + sale.items.reduce((profitSum, item) => profitSum + (item.price - item.cost) * item.quantity, 0);
+    return sum + sale.items.reduce((profitSum, item) => profitSum + getItemProfit(item), 0);
   }, 0);
+  const safeTotalProfit = Number.isFinite(totalProfit) ? totalProfit : 0;
 
   const profitMap = new Map<string, { profit: number; quantity: number; revenue: number }>();
   sales.forEach((sale) => {
     sale.items.forEach((item) => {
       const existing = profitMap.get(item.name) || { profit: 0, quantity: 0, revenue: 0 };
-      existing.profit += (item.price - item.cost) * item.quantity;
-      existing.quantity += item.quantity;
-      existing.revenue += item.price * item.quantity;
+      existing.profit += getItemProfit(item);
+      existing.quantity += Number(item.quantity ?? 0);
+      existing.revenue += getItemRevenue(item);
       profitMap.set(item.name, existing);
     });
   });
@@ -84,7 +98,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ sales, products, 
         />
         <StatCard
           title="Total Profit"
-          value={`₹${totalProfit.toFixed(2)}`}
+          value={`₹${safeTotalProfit.toFixed(2)}`}
           sub="Profit since launch"
           icon={IndianRupee}
           colorClass="text-emerald-600"

@@ -20,7 +20,7 @@ interface InventoryProps {
 }
 
 type SortField = 'name' | 'profit' | 'margin' | 'stock' | 'price';
-const ALLOWED_UNITS = ['pcs', 'kg'];
+const ALLOWED_UNITS = ['pcs', 'kg', 'L'];
 
 const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients, inventoryAdjustments, onAddProduct, onAddCategory, onUpdateProduct, onDeleteProduct, onAddIngredient, onUpdateIngredient, onDeleteIngredient, onAdjustProductStock, onAdjustIngredientStock, canEdit = true }) => {
   const [sortField, setSortField] = useState<SortField>('profit');
@@ -34,7 +34,6 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategory, setNewCategory] = useState('');
   const [newCategoryImage, setNewCategoryImage] = useState<File | null>(null);
-  const [customCategories, setCustomCategories] = useState<string[]>([]);
   const [selectedProductForAdjust, setSelectedProductForAdjust] = useState<Product | null>(null);
   const [selectedIngredientForAdjust, setSelectedIngredientForAdjust] = useState<Ingredient | null>(null);
   const [selectedIngredientForEdit, setSelectedIngredientForEdit] = useState<Ingredient | null>(null);
@@ -67,24 +66,25 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
 
   const categoryOptions = useMemo(() => {
     const categoryNames = [
-      ...customCategories,
-      ...categories.map(category => category.name.trim()).filter(Boolean),
-      ...products
-      .map(product => product.category.trim())
-      .filter(Boolean)
+      ...categories.map(category => category.name.trim()).filter(Boolean)
     ];
 
     if (formData.category.trim()) {
       categoryNames.push(formData.category.trim());
     }
 
-    return Array.from(new Set(categoryNames)).sort((a, b) => a.localeCompare(b));
-  }, [customCategories, categories, products, formData.category]);
+    const uniqueCategories: string[] = [];
+    const seen = new Set<string>();
+    for (const name of categoryNames) {
+      const lower = name.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        uniqueCategories.push(name);
+      }
+    }
 
-  const categoryFilterOptions = useMemo(() => [
-    'All',
-    ...new Set(categoryOptions)
-  ], [categoryOptions]);
+    return uniqueCategories.sort((a, b) => a.localeCompare(b));
+  }, [categories, formData.category]);
 
   const resetForm = () => {
     setFormData({ name: '', category: '', price: '', cost: '', stock: '', minStock: '', unit: 'pcs' });
@@ -222,10 +222,6 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     const trimmedCategory = newCategory.trim();
     if (!trimmedCategory) return;
 
-    setCustomCategories(prev => {
-      const alreadyExists = prev.some(category => category.toLowerCase() === trimmedCategory.toLowerCase());
-      return alreadyExists ? prev : [...prev, trimmedCategory];
-    });
     setFormData({ ...formData, category: trimmedCategory });
     setNewCategory('');
     setIsAddingCategory(false);
@@ -332,7 +328,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                 onClick={() => setCategoryFilter('All')}
                 className={`inline-flex flex-col items-center gap-1 px-3 py-2 rounded-lg border ${categoryFilter === 'All' ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'border-[var(--brand-border)] bg-white text-[var(--brand-dark)]'}`}
               >
-                <div className="w-16 h-12 bg-[var(--brand-muted)] rounded-md flex items-center justify-center text-xs">All</div>
+                <div className="w-16 h-16 bg-[var(--brand-muted)] rounded-md flex items-center justify-center text-xs">All</div>
               </button>
               {categories.map(cat => (
                 <button
@@ -342,9 +338,9 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                   className={`inline-flex flex-col items-center gap-1 px-3 py-2 rounded-lg border ${categoryFilter === cat.name ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'border-[var(--brand-border)] bg-white text-[var(--brand-dark)]'}`}
                 >
                   {cat.imageUrl ? (
-                    <img src={cat.imageUrl} alt={cat.name} className="w-16 h-12 object-cover rounded-md" />
+                    <img src={cat.imageUrl} alt={cat.name} className="w-16 h-16 object-cover rounded-md" />
                   ) : (
-                    <div className="w-16 h-12 bg-[var(--brand-muted)] rounded-md flex items-center justify-center text-xs">{cat.name}</div>
+                    <div className="w-16 h-16 bg-[var(--brand-muted)] rounded-md flex items-center justify-center text-xs">{cat.name}</div>
                   )}
                   <span className="text-xs mt-1">{cat.name}</span>
                 </button>
@@ -648,6 +644,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                   >
                     <option value="pcs">Pieces (pcs)</option>
                     <option value="kg">Kilogram (kg)</option>
+                    <option value="L">Liter (L)</option>
                   </select>
                 </div>
                 

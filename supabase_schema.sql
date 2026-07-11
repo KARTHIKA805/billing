@@ -5,6 +5,7 @@ create extension if not exists "uuid-ossp";
 create table if not exists categories (
   id uuid default uuid_generate_v4() primary key,
   name text not null unique,
+  image_url text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 

@@ -57,10 +57,11 @@ const Categories: React.FC<CategoriesProps> = ({ categories, onAddCategory, onUp
         )}
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+      <div className="flex flex-wrap gap-4">
         {categories.map(cat => (
-          <div key={cat.id} className="bg-[var(--brand-surface)] rounded-lg p-3 border border-[var(--brand-border)] flex flex-col items-center gap-2">
-            {cat.imageUrl ? <img src={cat.imageUrl} alt={cat.name} className="w-full h-28 object-cover rounded-md" /> : <div className="w-full h-28 bg-[var(--brand-muted)] rounded-md" />}
+          <div key={cat.id} className="bg-[var(--brand-surface)] rounded-lg p-3 border border-[var(--brand-border)] flex flex-col items-center gap-2" style={{width:130}}>
+
+            {cat.imageUrl ? <img src={cat.imageUrl} alt={cat.name} className="object-cover rounded-md" style={{width:75,height:75}} /> : <div className="bg-[var(--brand-muted)] rounded-md" style={{width:75,height:75}} />}
             <div className="w-full flex items-center justify-between">
               <div className="font-medium text-[var(--brand-dark)]">{cat.name}</div>
               {canEdit && (

@@ -21,6 +21,7 @@ import {
   deleteProduct as apiDeleteProduct,
   deleteIngredient as apiDeleteIngredient,
   addCustomer as apiAddCustomer,
+  deleteCustomer as apiDeleteCustomer,
   createSale as apiCreateSale
 } from './services/supabaseService';
 import { ViewState, Product, SaleRecord, CartItem, Customer, DailyStat, UserRole, Category, Ingredient, InventoryAdjustment } from './types';
@@ -155,7 +156,7 @@ const App: React.FC = () => {
   const [isLoadingData, setIsLoadingData] = useState(false);
 
   // Dynamic stats derived from interactions
-  const [notificationCount, setNotificationCount] = useState(0);
+  const [notifications, setNotifications] = useState<{id: string, message: string}[]>([]);
 
   // Check Auth on Mount
   useEffect(() => {
@@ -208,9 +209,15 @@ const App: React.FC = () => {
 
   useEffect(() => {
     // Calculate notifications based on low stock
-    const lowStock = products.filter(p => p.stock <= p.minStock).length;
-    setNotificationCount(lowStock);
-  }, [products]);
+    const lowStockProducts = products.filter(p => p.stock <= p.minStock);
+    const lowStockIngredients = ingredients.filter(i => i.currentStock <= i.minStock);
+    
+    const notifs = [
+      ...lowStockProducts.map(p => ({ id: `p-${p.id}`, message: `Product ${p.name} is low on stock (${p.stock} left)` })),
+      ...lowStockIngredients.map(i => ({ id: `i-${i.id}`, message: `Ingredient ${i.name} is low on stock (${i.currentStock} left)` }))
+    ];
+    setNotifications(notifs);
+  }, [products, ingredients]);
 
   const handleCompleteSale = async (
     items: CartItem[],
@@ -251,11 +258,29 @@ const App: React.FC = () => {
 
   const handleAddCustomer = async (customerData: Omit<Customer, 'id' | 'joinDate' | 'loyaltyPoints' | 'totalSpent'>) => {
     try {
+      if (customerData.phone) {
+        const exists = customers.some(c => c.phone === customerData.phone);
+        if (exists) {
+          alert('A customer with this phone number already exists.');
+          return;
+        }
+      }
       await apiAddCustomer(customerData);
       await fetchData();
     } catch (error) {
       console.error("Failed to add customer:", error);
       alert("Failed to add customer.");
+    }
+  };
+
+  const handleDeleteCustomer = async (customerId: string) => {
+    try {
+      await apiDeleteCustomer(customerId);
+      await fetchData();
+    } catch (error: any) {
+      console.error("Failed to delete customer:", error);
+      const msg = error?.message || error?.error_description || JSON.stringify(error);
+      alert(`Failed to delete customer. Error: ${msg}`);
     }
   };
 
@@ -389,7 +414,7 @@ const App: React.FC = () => {
         setIsLoggedIn(false);
         setUserRole(null);
       }}
-      notificationCount={notificationCount}
+      notifications={notifications}
       userRole={userRole ?? UserRole.ADMIN}
     >
       {currentView === ViewState.DASHBOARD && (
@@ -412,6 +437,7 @@ const App: React.FC = () => {
           customers={customers}
           sales={sales}
           onAddCustomer={handleAddCustomer}
+          onDeleteCustomer={handleDeleteCustomer}
         />
       )}
       {currentView === ViewState.USERS && userRole === UserRole.ADMIN && (
@@ -426,6 +452,8 @@ const App: React.FC = () => {
             onAddProduct={handleAddProduct}
             onAddCategory={handleAddCategory}
             onAddIngredient={handleAddIngredient}
+            onUpdateIngredient={handleUpdateIngredient}
+            onDeleteIngredient={handleDeleteIngredient}
             onUpdateProduct={handleUpdateProduct}
             onDeleteProduct={handleDeleteProduct}
             onAdjustProductStock={handleAdjustProductStock}

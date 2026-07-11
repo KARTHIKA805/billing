@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import SuvaiLogo from '../Suvai.png';
+import SuvaiLogo from '../suvai.jpeg';
 import { ViewState, UserRole } from '../types';
 import {
     LayoutDashboard,
@@ -20,7 +20,7 @@ interface LayoutProps {
     onChangeView: (view: ViewState) => void;
     onLogout: () => void;
     children: React.ReactNode;
-    notificationCount: number;
+    notifications: { id: string, message: string }[];
     userRole: UserRole;
 }
 
@@ -29,10 +29,11 @@ const Layout: React.FC<LayoutProps> = ({
     onChangeView,
     onLogout,
     children,
-    notificationCount,
+    notifications,
     userRole
 }) => {
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+    const [showNotifications, setShowNotifications] = useState(false);
 
     const NavItem = ({ view, icon: Icon, label }: { view: ViewState, icon: any, label: string }) => (
         <button
@@ -153,12 +154,35 @@ const Layout: React.FC<LayoutProps> = ({
 
                     <div className="flex items-center gap-4">
                         <div className="relative">
-                            <button className="p-2 text-[var(--brand-border)] hover:text-[var(--brand-dark)] rounded-full hover:bg-[var(--brand-surface)] transition-colors relative">
+                            <button 
+                                onClick={() => setShowNotifications(!showNotifications)}
+                                className="p-2 text-[var(--brand-border)] hover:text-[var(--brand-dark)] rounded-full hover:bg-[var(--brand-surface)] transition-colors relative"
+                            >
                                 <Bell size={20} />
-                                {notificationCount > 0 && (
+                                {notifications.length > 0 && (
                                     <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-[var(--brand-accent)] rounded-full border-2 border-white"></span>
                                 )}
                             </button>
+                            {showNotifications && (
+                                <div className="absolute right-0 mt-2 w-80 bg-[var(--brand-surface)] border border-[var(--brand-border)] rounded-xl shadow-lg z-50 overflow-hidden">
+                                    <div className="p-3 border-b border-[var(--brand-border)] bg-[var(--brand-muted)]">
+                                        <h3 className="font-semibold text-[var(--brand-dark)]">Notifications</h3>
+                                    </div>
+                                    <div className="max-h-64 overflow-y-auto">
+                                        {notifications.length === 0 ? (
+                                            <div className="p-4 text-center text-sm text-[var(--brand-border)]">
+                                                No notifications
+                                            </div>
+                                        ) : (
+                                            notifications.map(notif => (
+                                                <div key={notif.id} className="p-3 border-b border-[var(--brand-border)] last:border-0 hover:bg-[var(--brand-muted)] transition-colors">
+                                                    <p className="text-sm text-[var(--brand-dark)]">{notif.message}</p>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                         <div className="h-8 w-8 bg-[var(--brand-accent)] rounded-full flex items-center justify-center text-[var(--brand-dark)] font-bold text-sm border border-[var(--brand-border)]">
                             {userRole === UserRole.EMPLOYEE ? 'E' : 'A'}

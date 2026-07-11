@@ -88,6 +88,14 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     setSelectedPrintGroupIds((prev) => prev.filter((id) => groups.some((group) => group.id === id)));
   }, [groups]);
 
+  const clearCustomerFromGroup = (groupId: string) => {
+    setGroups((prev) => prev.map((group) => {
+      if (group.id !== groupId) return group;
+      return { ...group, customer: undefined, redeemPoints: false };
+    }));
+    setCustomerSearch('');
+  };
+
   const createGroup = (name: string, customer?: Customer) => {
     const id = `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const newGroup: BillGroup = {
@@ -140,9 +148,10 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
       if (group.id !== activeGroup.id) return group;
       const existing = group.items.find((item) => item.id === product.id);
       if (existing) {
+        const newQuantity = Math.min(existing.quantity + 1, product.stock);
         return {
           ...group,
-          items: group.items.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item),
+          items: group.items.map((item) => item.id === product.id ? { ...item, quantity: newQuantity } : item),
         };
       }
       return {
@@ -159,7 +168,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
         ...group,
         items: group.items.map((item) => {
           if (item.id === id) {
-            const newQty = Math.max(0, item.quantity + delta);
+            const newQty = Math.max(0, Math.min(item.quantity + delta, item.stock));
             return { ...item, quantity: newQty };
           }
           return item;
@@ -517,30 +526,48 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <div className="flex flex-wrap gap-3 items-center">
-            <label className="text-sm font-medium text-[var(--brand-dark)]">Category</label>
-            <div className="w-full overflow-x-auto py-2">
-              <div className="inline-flex items-center gap-3">
-                <button type="button" onClick={() => setCategoryFilter('All')} className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl ${categoryFilter === 'All' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}>
-                  All
+          {/* ── Premium Category Strip ── */}
+          <div className="category-strip-wrapper">
+            <div className="category-strip">
+              {/* All pill */}
+              <button
+                type="button"
+                id="cat-filter-all"
+                onClick={() => setCategoryFilter('All')}
+                className={`category-chip ${categoryFilter === 'All' ? 'category-chip--active' : ''}`}
+              >
+                <div className="category-chip__img-wrap">
+                  <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
+                    <circle cx="20" cy="20" r="20" fill="#7f1e2820" />
+                    <rect x="10" y="10" width="8" height="8" rx="2" fill="#7f1e28" opacity=".8" />
+                    <rect x="22" y="10" width="8" height="8" rx="2" fill="#7f1e28" opacity=".6" />
+                    <rect x="10" y="22" width="8" height="8" rx="2" fill="#7f1e28" opacity=".6" />
+                    <rect x="22" y="22" width="8" height="8" rx="2" fill="#7f1e28" opacity=".4" />
+                  </svg>
+                </div>
+                <span className="category-chip__label">All</span>
+                <span className="category-chip__bar" />
+              </button>
+
+              {(categories || []).map(cat => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  id={`cat-filter-${cat.id}`}
+                  onClick={() => setCategoryFilter(cat.name)}
+                  className={`category-chip ${categoryFilter === cat.name ? 'category-chip--active' : ''}`}
+                >
+                  <div className="category-chip__img-wrap">
+                    {cat.imageUrl
+                      ? <img src={cat.imageUrl} alt={cat.name} className="w-full h-full object-cover" />
+                      : <div className="w-full h-full flex items-center justify-center text-[var(--brand-dark)] text-xl font-bold">{cat.name[0]}</div>
+                    }
+                  </div>
+                  <span className="category-chip__label">{cat.name}</span>
+                  <span className="category-chip__bar" />
                 </button>
-                {(categories || []).map(cat => (
-                  <button key={cat.id} type="button" onClick={() => setCategoryFilter(cat.name)} className={`inline-flex items-center gap-2 px-2 py-1 rounded-md ${categoryFilter === cat.name ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}>
-                    {cat.imageUrl ? <img src={cat.imageUrl} alt={cat.name} className="w-8 h-6 object-cover rounded-sm" /> : <div className="w-8 h-6 bg-[var(--brand-muted)] rounded-sm" />}
-                    <span className="text-xs">{cat.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="rounded-xl border border-[var(--brand-border)] bg-white px-3 py-2 text-sm text-[var(--brand-text-dark)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20"
-            >
-              {combinedCategories.map((category) => (
-                <option key={category} value={category}>{category}</option>
               ))}
-            </select>
+            </div>
           </div>
         </div>
 
@@ -575,17 +602,32 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
         <div className="p-3 border-b border-[var(--brand-border)] bg-[var(--brand-surface)]">
           <div className="flex flex-wrap gap-2 items-center mb-3">
             {groups.map((group) => (
-              <button
-                key={group.id}
-                onClick={() => setActiveGroupId(group.id)}
-                className={`px-3 py-2 rounded-2xl border text-xs font-semibold transition ${
-                  activeGroup?.id === group.id
-                    ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)]/10 text-[var(--brand-dark)]'
-                    : 'border-[var(--brand-border)] bg-white text-[var(--brand-border)] hover:border-[var(--brand-dark)]'
-                }`}
-              >
-                {group.name}
-              </button>
+              <div key={group.id} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setActiveGroupId(group.id)}
+                  className={`px-3 py-2 rounded-2xl border text-xs font-semibold transition ${
+                    activeGroup?.id === group.id
+                      ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)]/10 text-[var(--brand-dark)]'
+                      : 'border-[var(--brand-border)] bg-white text-[var(--brand-border)] hover:border-[var(--brand-dark)]'
+                  }`}
+                >
+                  {group.name}
+                </button>
+                {group.customer && (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      clearCustomerFromGroup(group.id);
+                    }}
+                    className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-[var(--brand-border)] bg-white text-[var(--brand-border)] shadow-sm hover:text-[var(--brand-dark)]"
+                    aria-label={`Remove customer from ${group.name}`}
+                  >
+                    <X size={10} />
+                  </button>
+                )}
+              </div>
             ))}
             <button
               onClick={() => createGroup(`Customer ${groups.length + 1}`)}
@@ -611,16 +653,11 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                   </div>
                 </div>
                 <button
-                  onClick={() => {
-                    setGroups((prev) => prev.map((group) => {
-                      if (group.id !== activeGroup.id) return group;
-                      return { ...group, customer: undefined, redeemPoints: false };
-                    }));
-                    setCustomerSearch('');
-                  }}
-                  className="text-[var(--brand-border)] hover:text-[var(--brand-dark)]"
+                  onClick={() => clearCustomerFromGroup(activeGroup.id)}
+                  className="inline-flex items-center gap-1 rounded-full border border-[var(--brand-border)] px-2 py-1 text-[11px] font-medium text-[var(--brand-border)] hover:border-[var(--brand-dark)] hover:text-[var(--brand-dark)]"
                 >
-                  <X size={16} />
+                  <X size={14} />
+                  Remove customer
                 </button>
               </div>
             ) : (
