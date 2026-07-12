@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Category, Product, Ingredient, InventoryAdjustment } from '../types';
+import { BILLING_WEIGHT_OPTIONS } from '../constants';
 import { ArrowUpDown, AlertCircle, Plus, X, Pencil, Trash2, Tag, Edit3, Box, Archive, RotateCcw } from 'lucide-react';
 
 interface InventoryProps {
@@ -26,27 +27,7 @@ type ListMode = 'active' | 'deleted';
 
 type SortField = 'name' | 'profit' | 'margin' | 'price';
 const ALLOWED_UNITS = ['pcs', 'kg', 'L'];
-const MENU_ITEM_UNITS = [
-  '100 gms',
-  '150 gms',
-  '200 gms',
-  '250 gms',
-  '300 gms',
-  '350 gms',
-  '400 gms',
-  '450 gms',
-  '500 gms',
-  '550 gms',
-  '600 gms',
-  '650 gms',
-  '700 gms',
-  '750 gms',
-  '800 gms',
-  '850 gms',
-  '900 gms',
-  '950 gms',
-  '1 kg'
-];
+const MENU_ITEM_UNITS = BILLING_WEIGHT_OPTIONS;
 
 const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients, inventoryAdjustments, onAddProduct, onAddCategory, onUpdateProduct, onDeleteProduct, onAddIngredient, onUpdateIngredient, onDeleteIngredient, onAdjustProductStock, onAdjustIngredientStock, onFetchDeletedItems, onRestoreProduct, onRestoreIngredient, canEdit = true }) => {
   const [listMode, setListMode] = useState<ListMode>('active');

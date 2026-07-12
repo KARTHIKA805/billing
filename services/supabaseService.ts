@@ -546,7 +546,7 @@ export const createSale = async (sale: SaleRecord) => {
             product_id: item.id,
             quantity: item.quantity,
             price_at_sale: item.price,
-            product_name: item.name
+            product_name: `${item.name} (${item.unit})`
         }));
 
     if (itemsPayload.length === 0) {

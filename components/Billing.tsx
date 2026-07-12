@@ -1,7 +1,7 @@
 import { FC, useState, useMemo, useEffect, useRef } from 'react';
 import { Product, CartItem, Customer } from '../types';
 import { Search, Plus, Minus, CreditCard, CheckCircle, ShoppingBag, User, X, Award, Smartphone, Banknote } from 'lucide-react';
-import { SHOP_QR_CODE_URL } from '../constants';
+import { SHOP_QR_CODE_URL, BILLING_WEIGHT_OPTIONS, getPriceForWeight, getCartLineId } from '../constants';
 
 interface BillingProps {
   products: Product[];
@@ -44,6 +44,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
   const [saleError, setSaleError] = useState('');
   const [printMode, setPrintMode] = useState<'all' | 'selected'>('all');
   const [selectedPrintGroupIds, setSelectedPrintGroupIds] = useState<string[]>([]);
+  const [weightPickerProduct, setWeightPickerProduct] = useState<Product | null>(null);
   const hasAutoPrintedRef = useRef(false);
 
   const categoryNamesFromProducts = useMemo(() => {
@@ -146,13 +147,23 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     }));
   };
 
-  const addToCart = (product: Product) => {
+  const addToCartWithWeight = (product: Product, selectedUnit: string) => {
+    const unitPrice = getPriceForWeight(product.price, product.unit, selectedUnit);
+    const cartLineId = getCartLineId(product.id, selectedUnit);
+    const cartItem: CartItem = {
+      ...product,
+      unit: selectedUnit,
+      price: unitPrice,
+      quantity: 1,
+      cartLineId,
+    };
+
     if (!activeGroup) {
       const groupName = `Customer ${groups.length + 1}`;
       const group: BillGroup = {
         id: `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name: groupName,
-        items: [{ ...product, quantity: 1 }],
+        items: [cartItem],
         redeemPoints: false,
       };
       setGroups((prev) => [...prev, group]);
@@ -162,28 +173,42 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
 
     setGroups((prev) => prev.map((group) => {
       if (group.id !== activeGroup.id) return group;
-      const existing = group.items.find((item) => item.id === product.id);
+      const existing = group.items.find((item) => item.cartLineId === cartLineId);
       if (existing) {
         const newQuantity = Math.min(existing.quantity + 1, product.stock);
         return {
           ...group,
-          items: group.items.map((item) => item.id === product.id ? { ...item, quantity: newQuantity } : item),
+          items: group.items.map((item) => item.cartLineId === cartLineId ? { ...item, quantity: newQuantity } : item),
         };
       }
       return {
         ...group,
-        items: [...group.items, { ...product, quantity: 1 }],
+        items: [...group.items, cartItem],
       };
     }));
   };
 
-  const updateQuantity = (groupId: string, id: string, delta: number) => {
+  const openWeightPicker = (product: Product) => {
+    setWeightPickerProduct(product);
+  };
+
+  const closeWeightPicker = () => {
+    setWeightPickerProduct(null);
+  };
+
+  const handleWeightSelect = (unit: string) => {
+    if (!weightPickerProduct) return;
+    addToCartWithWeight(weightPickerProduct, unit);
+    closeWeightPicker();
+  };
+
+  const updateQuantity = (groupId: string, cartLineId: string, delta: number) => {
     setGroups((prev) => prev.map((group) => {
       if (group.id !== groupId) return group;
       return {
         ...group,
         items: group.items.map((item) => {
-          if (item.id === id) {
+          if (item.cartLineId === cartLineId) {
             const newQty = Math.max(0, Math.min(item.quantity + delta, item.stock));
             return { ...item, quantity: newQty };
           }
@@ -203,12 +228,11 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     });
   };
 
-  const removeItem = (groupId: string, itemId: string) => {
+  const removeItem = (groupId: string, cartLineId: string) => {
     setGroups((prev) => prev.map((group) => {
       if (group.id !== groupId) return group;
-      return { ...group, items: group.items.filter((it) => it.id !== itemId) };
+      return { ...group, items: group.items.filter((it) => it.cartLineId !== cartLineId) };
     }));
-    // if the removed item made the active group empty, keep the group but UI handles empty state
   };
 
   const getGroupSubtotal = (group: BillGroup) => group.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
@@ -362,8 +386,8 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                 <div key={group.id} className="space-y-1 text-[10px] thermal-receipt-print__group">
                   <div className="font-bold">{group.customer?.name ?? group.name}</div>
                   {group.items.map((item) => (
-                    <div key={`${group.id}-${item.id}`} className="flex justify-between gap-2">
-                      <span className="flex-1">{item.name} x {item.quantity}</span>
+                    <div key={item.cartLineId} className="flex justify-between gap-2">
+                      <span className="flex-1">{item.name} ({item.unit}) x {item.quantity}</span>
                       <span>₹{(item.price * item.quantity).toFixed(2)}</span>
                     </div>
                   ))}
@@ -569,7 +593,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
           {filteredProducts.map(product => (
             <button
               key={product.id}
-              onClick={() => addToCart(product)}
+              onClick={() => openWeightPicker(product)}
               disabled={product.stock <= 0}
               className={`p-3 md:p-4 rounded-xl border text-left transition-all relative group ${
                 product.stock <= 0 
@@ -583,7 +607,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
               </div>
               <h4 className="font-medium text-[var(--brand-dark)] mb-1 truncate text-sm md:text-base">{product.name}</h4>
               <p className={`text-xs ${product.stock < 10 ? 'text-[var(--brand-accent)]' : 'text-[var(--brand-border)]'}`}>
-                {product.stock} {product.unit} left
+                {product.stock} in stock • from {product.unit}
               </p>
             </button>
           ))}
@@ -694,28 +718,28 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
             </div>
           ) : (
             activeGroupItems.map((item) => (
-              <div key={item.id} className="flex items-center gap-3 bg-[var(--brand-surface)] p-2 rounded-lg border border-[var(--brand-border)]">
-                <div className="flex-1">
-                  <h4 className="font-medium text-sm text-[var(--brand-dark)]">{item.name}</h4>
-                  <div className="text-xs text-[var(--brand-border)]">₹{item.price.toFixed(2)} x {item.quantity}</div>
+              <div key={item.cartLineId} className="flex items-center gap-3 bg-[var(--brand-surface)] p-2 rounded-lg border border-[var(--brand-border)]">
+                <div className="flex-1 min-w-0">
+                  <h4 className="font-medium text-sm text-[var(--brand-dark)] truncate">{item.name}</h4>
+                  <div className="text-xs text-[var(--brand-border)]">{item.unit} • ₹{item.price.toFixed(2)} x {item.quantity}</div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => updateQuantity(activeGroup.id, item.id, -1)}
+                    onClick={() => updateQuantity(activeGroup.id, item.cartLineId, -1)}
                     className="w-6 h-6 flex items-center justify-center rounded-full bg-[var(--brand-muted)] hover:bg-[var(--brand-surface)] text-[var(--brand-dark)] transition-colors"
                   >
                     <Minus size={12} />
                   </button>
                   <span className="font-medium text-sm w-4 text-center">{item.quantity}</span>
                   <button
-                    onClick={() => updateQuantity(activeGroup.id, item.id, 1)}
+                    onClick={() => updateQuantity(activeGroup.id, item.cartLineId, 1)}
                     className="w-6 h-6 flex items-center justify-center rounded-full bg-[var(--brand-muted)] hover:bg-[var(--brand-surface)] text-[var(--brand-dark)] transition-colors"
                   >
                     <Plus size={12} />
                   </button>
                 </div>
                 <button
-                  onClick={() => removeItem(activeGroup.id, item.id)}
+                  onClick={() => removeItem(activeGroup.id, item.cartLineId)}
                   className="ml-2 p-1 rounded-md text-[var(--brand-border)] hover:text-[var(--brand-dark)]"
                   aria-label="Remove item"
                 >
@@ -763,6 +787,40 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
           </button>
         </div>
       </div>
+
+      {weightPickerProduct && (
+        <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[var(--brand-surface)] rounded-2xl shadow-xl w-full max-w-lg overflow-hidden border border-[var(--brand-border)] animate-scale-up">
+            <div className="p-5 border-b border-[var(--brand-border)] flex justify-between items-center bg-[var(--brand-muted)]">
+              <div>
+                <h3 className="text-lg font-bold text-[var(--brand-dark)]">Select Weight</h3>
+                <p className="text-sm text-[var(--brand-border)]">{weightPickerProduct.name}</p>
+              </div>
+              <button onClick={closeWeightPicker} className="text-[var(--brand-border)] hover:text-[var(--brand-dark)] p-1">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 max-h-[60vh] overflow-y-auto">
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                {BILLING_WEIGHT_OPTIONS.map((unit) => {
+                  const price = getPriceForWeight(weightPickerProduct.price, weightPickerProduct.unit, unit);
+                  return (
+                    <button
+                      key={unit}
+                      type="button"
+                      onClick={() => handleWeightSelect(unit)}
+                      className="rounded-xl border border-[var(--brand-border)] bg-white px-3 py-3 text-center hover:border-[var(--brand-dark)] hover:bg-[var(--brand-muted)] transition-colors"
+                    >
+                      <div className="text-sm font-semibold text-[var(--brand-dark)]">{unit}</div>
+                      <div className="text-xs text-[var(--brand-border)] mt-1">₹{price.toFixed(2)}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

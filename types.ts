@@ -69,6 +69,7 @@ export interface AppUser {
 
 export interface CartItem extends Product {
   quantity: number;
+  cartLineId: string;
 }
 
 export type PaymentMethod = 'CASH' | 'UPI' | 'OTHER';

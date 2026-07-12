@@ -1,5 +1,54 @@
 import { Product, DailyStat, SaleRecord, Customer } from './types';
 
+export const BILLING_WEIGHT_OPTIONS = [
+  '50 gms',
+  '100 gms',
+  '150 gms',
+  '200 gms',
+  '250 gms',
+  '300 gms',
+  '350 gms',
+  '400 gms',
+  '450 gms',
+  '500 gms',
+  '550 gms',
+  '600 gms',
+  '650 gms',
+  '700 gms',
+  '750 gms',
+  '800 gms',
+  '850 gms',
+  '900 gms',
+  '950 gms',
+  '1 kg'
+];
+
+export const parseWeightToGrams = (unit: string): number | null => {
+  const normalized = unit.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (normalized === '1 kg' || normalized === '1kg') return 1000;
+  const gmsMatch = normalized.match(/^(\d+)\s*gms?$/);
+  if (gmsMatch) return Number(gmsMatch[1]);
+  const kgMatch = normalized.match(/^(\d+(?:\.\d+)?)\s*kg$/);
+  if (kgMatch) return Number(kgMatch[1]) * 1000;
+  return null;
+};
+
+export const getBaseWeightGrams = (unit: string): number => {
+  const parsed = parseWeightToGrams(unit);
+  if (parsed && parsed > 0) return parsed;
+  if (unit.trim().toLowerCase() === 'kg') return 1000;
+  return 250;
+};
+
+export const getPriceForWeight = (basePrice: number, baseUnit: string, selectedUnit: string): number => {
+  const baseGrams = getBaseWeightGrams(baseUnit);
+  const selectedGrams = parseWeightToGrams(selectedUnit);
+  if (!selectedGrams || baseGrams <= 0) return basePrice;
+  return parseFloat(((basePrice * selectedGrams) / baseGrams).toFixed(2));
+};
+
+export const getCartLineId = (productId: string, unit: string) => `${productId}::${unit}`;
+
 export const MOCK_PRODUCTS: Product[] = [
   { id: 'p1', name: 'Sourdough Loaf', category: 'Bread', price: 180.00, cost: 45.00, stock: 12, minStock: 5, unit: 'pcs' },
   { id: 'p2', name: 'Butter Croissant', category: 'Pastry', price: 120.00, cost: 30.00, stock: 45, minStock: 20, unit: 'pcs' },
