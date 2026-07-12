@@ -23,31 +23,59 @@ export const BILLING_WEIGHT_OPTIONS = [
   '1 kg'
 ];
 
-export const parseWeightToGrams = (unit: string): number | null => {
+export const normalizeWeightUnit = (unit: string): string => {
   const normalized = unit.trim().toLowerCase().replace(/\s+/g, ' ');
-  if (normalized === '1 kg' || normalized === '1kg') return 1000;
-  const gmsMatch = normalized.match(/^(\d+)\s*gms?$/);
-  if (gmsMatch) return Number(gmsMatch[1]);
+  if (normalized === '1kg') return '1 kg';
+  const gmsMatch = normalized.match(/^(\d+)gms?$/);
+  if (gmsMatch) return `${gmsMatch[1]} gms`;
+  const spacedGmsMatch = normalized.match(/^(\d+)\s+gms?$/);
+  if (spacedGmsMatch) return `${spacedGmsMatch[1]} gms`;
   const kgMatch = normalized.match(/^(\d+(?:\.\d+)?)\s*kg$/);
+  if (kgMatch) return `${kgMatch[1]} kg`;
+  return normalized;
+};
+
+export const parseWeightToGrams = (unit: string): number | null => {
+  const normalized = normalizeWeightUnit(unit);
+  if (normalized === '1 kg') return 1000;
+  const gmsMatch = normalized.match(/^(\d+)\s+gms$/);
+  if (gmsMatch) return Number(gmsMatch[1]);
+  const kgMatch = normalized.match(/^(\d+(?:\.\d+)?)\s+kg$/);
   if (kgMatch) return Number(kgMatch[1]) * 1000;
   return null;
 };
+
+export const isWeightUnit = (unit: string) => parseWeightToGrams(unit) !== null;
 
 export const getBaseWeightGrams = (unit: string): number => {
   const parsed = parseWeightToGrams(unit);
   if (parsed && parsed > 0) return parsed;
   if (unit.trim().toLowerCase() === 'kg') return 1000;
-  return 250;
+  return 1000;
 };
 
 export const getPriceForWeight = (basePrice: number, baseUnit: string, selectedUnit: string): number => {
   const baseGrams = getBaseWeightGrams(baseUnit);
   const selectedGrams = parseWeightToGrams(selectedUnit);
-  if (!selectedGrams || baseGrams <= 0) return basePrice;
+  if (!selectedGrams || baseGrams <= 0 || basePrice <= 0) return basePrice;
   return parseFloat(((basePrice * selectedGrams) / baseGrams).toFixed(2));
 };
 
-export const getCartLineId = (productId: string, unit: string) => `${productId}::${unit}`;
+export const getCostForWeight = (baseCost: number, baseUnit: string, selectedUnit: string): number => {
+  return getPriceForWeight(baseCost, baseUnit, selectedUnit);
+};
+
+export const formatInventoryUnitPrice = (price: number, unit: string) => `₹${price.toFixed(2)} / ${unit}`;
+
+export const getWeightPriceBreakdown = (basePrice: number, baseUnit: string, baseCost = 0) =>
+  BILLING_WEIGHT_OPTIONS.map((unit) => ({
+    unit,
+    price: getPriceForWeight(basePrice, baseUnit, unit),
+    cost: getCostForWeight(baseCost, baseUnit, unit),
+    isInventoryUnit: normalizeWeightUnit(unit) === normalizeWeightUnit(baseUnit),
+  }));
+
+export const getCartLineId = (productId: string, unit: string) => `${productId}::${normalizeWeightUnit(unit)}`;
 
 export const MOCK_PRODUCTS: Product[] = [
   { id: 'p1', name: 'Sourdough Loaf', category: 'Bread', price: 180.00, cost: 45.00, stock: 12, minStock: 5, unit: 'pcs' },

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Category, Product, Ingredient, InventoryAdjustment } from '../types';
-import { BILLING_WEIGHT_OPTIONS } from '../constants';
+import { BILLING_WEIGHT_OPTIONS, getWeightPriceBreakdown, formatInventoryUnitPrice } from '../constants';
 import { ArrowUpDown, AlertCircle, Plus, X, Pencil, Trash2, Tag, Edit3, Box, Archive, RotateCcw } from 'lucide-react';
 
 interface InventoryProps {
@@ -34,8 +34,8 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
   const [deletedProducts, setDeletedProducts] = useState<Product[]>([]);
   const [deletedIngredients, setDeletedIngredients] = useState<Ingredient[]>([]);
   const [isLoadingDeleted, setIsLoadingDeleted] = useState(false);
-  const [sortField, setSortField] = useState<SortField>('profit');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [sortField, setSortField] = useState<SortField>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [selectedProductForQuickUpdate, setSelectedProductForQuickUpdate] = useState<Product | null>(null);
   const [quickAdjustAmount, setQuickAdjustAmount] = useState('0');
@@ -294,6 +294,13 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     return MENU_ITEM_UNITS;
   }, [formData.unit]);
 
+  const billingPricePreview = useMemo(() => {
+    const price = formData.price.trim() ? parseFloat(formData.price) : 0;
+    const cost = formData.cost.trim() ? parseFloat(formData.cost) : 0;
+    if (!price || !formData.unit) return [];
+    return getWeightPriceBreakdown(price, formData.unit, cost);
+  }, [formData.price, formData.cost, formData.unit]);
+
   const sortedProducts = useMemo(() => {
     return [...products].sort((a, b) => {
       const profitA = a.price - a.cost;
@@ -303,7 +310,10 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
       let valB: number | string = 0;
 
       switch (sortField) {
-        case 'name': valA = a.name; valB = b.name; break;
+        case 'name':
+          return sortDir === 'asc'
+            ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+            : b.name.localeCompare(a.name, undefined, { sensitivity: 'base' });
         case 'price': valA = a.price; valB = b.price; break;
         case 'profit': valA = profitA; valB = profitB; break;
         case 'margin': valA = ((profitA / a.price) * 100); valB = ((profitB / b.price) * 100); break;
@@ -318,6 +328,10 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
   const filteredProducts = useMemo(() => {
     return sortedProducts.filter(product => categoryFilter === 'All' || product.category === categoryFilter);
   }, [sortedProducts, categoryFilter]);
+
+  const sortedIngredients = useMemo(() => {
+    return [...ingredients].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }, [ingredients]);
 
   const TableHeader = ({ field, label }: { field: SortField, label: string }) => (
     <th 
@@ -533,7 +547,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--brand-border)]">
-                {ingredients.map(ingredient => {
+                {sortedIngredients.map(ingredient => {
                   const isLow = ingredient.currentStock <= ingredient.minStock;
                   return (
                     <tr key={ingredient.id} className="hover:bg-[var(--brand-muted)]/80 transition-colors">
@@ -709,7 +723,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                 </div>
                 
                 <div className="col-span-1">
-                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Selling Price (₹)</label>
+                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Selling Price (₹) for unit</label>
                   <input 
                     type="number" 
                     step="0.01"
@@ -720,7 +734,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                   />
                 </div>
                 <div className="col-span-1">
-                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Cost Price (₹)</label>
+                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Cost Price (₹) for unit</label>
                   <input 
                     type="number" 
                     step="0.01"
@@ -741,6 +755,30 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                     onChange={e => setFormData({...formData, minStock: e.target.value})}
                   />
                 </div>
+
+                {billingPricePreview.length > 0 && (
+                  <div className="col-span-2 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-muted)] p-4">
+                    <p className="text-sm font-semibold text-[var(--brand-dark)] mb-1">
+                      Billing auto-prices from {formatInventoryUnitPrice(parseFloat(formData.price || '0'), formData.unit)}
+                    </p>
+                    <p className="text-xs text-[var(--brand-border)] mb-3">
+                      These prices will appear automatically when billing this product.
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {billingPricePreview.map(({ unit, price, isInventoryUnit }) => (
+                        <div
+                          key={unit}
+                          className={`rounded-lg border px-3 py-2 text-center ${
+                            isInventoryUnit ? 'border-[var(--brand-dark)] bg-white' : 'border-[var(--brand-border)] bg-white/80'
+                          }`}
+                        >
+                          <div className="text-xs font-semibold text-[var(--brand-dark)]">{unit}</div>
+                          <div className="text-xs text-[var(--brand-border)] mt-1">₹{price.toFixed(2)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="col-span-2 pt-4">
                   <button type="submit" className="w-full bg-[var(--brand-dark)] text-[var(--brand-text-light)] py-3.5 rounded-xl font-medium hover:bg-[var(--brand-bg)] transition-colors shadow-md shadow-[var(--brand-border)]">

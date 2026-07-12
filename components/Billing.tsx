@@ -1,7 +1,7 @@
 import { FC, useState, useMemo, useEffect, useRef } from 'react';
 import { Product, CartItem, Customer } from '../types';
 import { Search, Plus, Minus, CreditCard, CheckCircle, ShoppingBag, User, X, Award, Smartphone, Banknote } from 'lucide-react';
-import { SHOP_QR_CODE_URL, BILLING_WEIGHT_OPTIONS, getPriceForWeight, getCartLineId } from '../constants';
+import { SHOP_QR_CODE_URL, getPriceForWeight, getCostForWeight, getCartLineId, getWeightPriceBreakdown, formatInventoryUnitPrice } from '../constants';
 
 interface BillingProps {
   products: Product[];
@@ -61,11 +61,13 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
 
   const filteredProducts = useMemo(() => {
     const normalizedSearch = search.toLowerCase();
-    return products.filter((p) => {
-      const matchesText = p.name.toLowerCase().includes(normalizedSearch) || p.category.toLowerCase().includes(normalizedSearch);
-      const matchesCategory = categoryFilter === 'All' || p.category === categoryFilter;
-      return matchesText && matchesCategory;
-    });
+    return products
+      .filter((p) => {
+        const matchesText = p.name.toLowerCase().includes(normalizedSearch) || p.category.toLowerCase().includes(normalizedSearch);
+        const matchesCategory = categoryFilter === 'All' || p.category === categoryFilter;
+        return matchesText && matchesCategory;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   }, [products, search, categoryFilter]);
 
   const filteredCustomers = useMemo(() => {
@@ -149,11 +151,13 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
 
   const addToCartWithWeight = (product: Product, selectedUnit: string) => {
     const unitPrice = getPriceForWeight(product.price, product.unit, selectedUnit);
+    const unitCost = getCostForWeight(product.cost, product.unit, selectedUnit);
     const cartLineId = getCartLineId(product.id, selectedUnit);
     const cartItem: CartItem = {
       ...product,
       unit: selectedUnit,
       price: unitPrice,
+      cost: unitCost,
       quantity: 1,
       cartLineId,
     };
@@ -326,6 +330,11 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     }
     setSelectedPrintGroupIds([]);
   };
+
+  const weightPickerOptions = useMemo(() => {
+    if (!weightPickerProduct) return [];
+    return getWeightPriceBreakdown(weightPickerProduct.price, weightPickerProduct.unit, weightPickerProduct.cost);
+  }, [weightPickerProduct]);
 
   const receiptNumber = `INV-${Date.now().toString().slice(-6)}`;
   const receiptTimestamp = new Date().toLocaleString('en-IN', {
@@ -603,11 +612,11 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
             >
               <div className="flex justify-between items-start mb-2">
                 <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider text-[var(--brand-border)] bg-[var(--brand-muted)] px-2 py-0.5 rounded-full">{product.category}</span>
-                <span className="font-bold text-[var(--brand-dark)]">₹{product.price.toFixed(2)}</span>
+                <span className="font-bold text-[var(--brand-dark)]">{formatInventoryUnitPrice(product.price, product.unit)}</span>
               </div>
               <h4 className="font-medium text-[var(--brand-dark)] mb-1 truncate text-sm md:text-base">{product.name}</h4>
               <p className={`text-xs ${product.stock < 10 ? 'text-[var(--brand-accent)]' : 'text-[var(--brand-border)]'}`}>
-                {product.stock} in stock • from {product.unit}
+                {product.stock} in stock • tap to choose weight
               </p>
             </button>
           ))}
@@ -791,31 +800,45 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
       {weightPickerProduct && (
         <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[var(--brand-surface)] rounded-2xl shadow-xl w-full max-w-lg overflow-hidden border border-[var(--brand-border)] animate-scale-up">
-            <div className="p-5 border-b border-[var(--brand-border)] flex justify-between items-center bg-[var(--brand-muted)]">
-              <div>
-                <h3 className="text-lg font-bold text-[var(--brand-dark)]">Select Weight</h3>
-                <p className="text-sm text-[var(--brand-border)]">{weightPickerProduct.name}</p>
+            <div className="p-5 border-b border-[var(--brand-border)] bg-[var(--brand-muted)]">
+              <div className="flex justify-between items-start gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-[var(--brand-dark)]">Select Weight</h3>
+                  <p className="text-sm text-[var(--brand-border)]">{weightPickerProduct.name}</p>
+                  <p className="text-sm font-semibold text-[var(--brand-dark)] mt-2">
+                    Inventory price: {formatInventoryUnitPrice(weightPickerProduct.price, weightPickerProduct.unit)}
+                  </p>
+                  <p className="text-xs text-[var(--brand-border)] mt-1">
+                    All weights below are auto-calculated from inventory.
+                  </p>
+                </div>
+                <button onClick={closeWeightPicker} className="text-[var(--brand-border)] hover:text-[var(--brand-dark)] p-1 shrink-0">
+                  <X size={20} />
+                </button>
               </div>
-              <button onClick={closeWeightPicker} className="text-[var(--brand-border)] hover:text-[var(--brand-dark)] p-1">
-                <X size={20} />
-              </button>
             </div>
             <div className="p-5 max-h-[60vh] overflow-y-auto">
               <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                {BILLING_WEIGHT_OPTIONS.map((unit) => {
-                  const price = getPriceForWeight(weightPickerProduct.price, weightPickerProduct.unit, unit);
-                  return (
-                    <button
-                      key={unit}
-                      type="button"
-                      onClick={() => handleWeightSelect(unit)}
-                      className="rounded-xl border border-[var(--brand-border)] bg-white px-3 py-3 text-center hover:border-[var(--brand-dark)] hover:bg-[var(--brand-muted)] transition-colors"
-                    >
-                      <div className="text-sm font-semibold text-[var(--brand-dark)]">{unit}</div>
-                      <div className="text-xs text-[var(--brand-border)] mt-1">₹{price.toFixed(2)}</div>
-                    </button>
-                  );
-                })}
+                {weightPickerOptions.map(({ unit, price, isInventoryUnit }) => (
+                  <button
+                    key={unit}
+                    type="button"
+                    onClick={() => handleWeightSelect(unit)}
+                    className={`rounded-xl border px-3 py-3 text-center transition-colors ${
+                      isInventoryUnit
+                        ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)]/10 hover:bg-[var(--brand-dark)]/15'
+                        : 'border-[var(--brand-border)] bg-white hover:border-[var(--brand-dark)] hover:bg-[var(--brand-muted)]'
+                    }`}
+                  >
+                    <div className="text-sm font-semibold text-[var(--brand-dark)]">{unit}</div>
+                    <div className="text-xs text-[var(--brand-border)] mt-1">₹{price.toFixed(2)}</div>
+                    {isInventoryUnit && (
+                      <div className="text-[10px] font-semibold text-[var(--brand-dark)] mt-1 uppercase tracking-wide">
+                        Inventory
+                      </div>
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
           </div>
