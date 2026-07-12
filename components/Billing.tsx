@@ -1,4 +1,4 @@
-import { FC, useState, useMemo, useEffect } from 'react';
+import { FC, useState, useMemo, useEffect, useRef } from 'react';
 import { Product, CartItem, Customer } from '../types';
 import { Search, Plus, Minus, CreditCard, CheckCircle, ShoppingBag, User, X, Award, Smartphone, Banknote } from 'lucide-react';
 import { SHOP_QR_CODE_URL } from '../constants';
@@ -30,8 +30,6 @@ interface BillGroup {
 }
 
 type PaymentMethod = 'CASH' | 'UPI' | 'OTHER' | null;
-const CGST_RATE = 0.09;
-const SGST_RATE = 0.09;
 
 const Billing: FC<BillingProps> = ({ products, customers, categories, onCompleteSale }) => {
   const [groups, setGroups] = useState<BillGroup[]>([]);
@@ -46,6 +44,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
   const [saleError, setSaleError] = useState('');
   const [printMode, setPrintMode] = useState<'all' | 'selected'>('all');
   const [selectedPrintGroupIds, setSelectedPrintGroupIds] = useState<string[]>([]);
+  const hasAutoPrintedRef = useRef(false);
 
   const categoryNamesFromProducts = useMemo(() => {
     return Array.from(new Set(products.map((product) => product.category).filter(Boolean))).sort();
@@ -87,6 +86,23 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
   useEffect(() => {
     setSelectedPrintGroupIds((prev) => prev.filter((id) => groups.some((group) => group.id === id)));
   }, [groups]);
+
+  useEffect(() => {
+    if (checkoutStep !== 'success') {
+      hasAutoPrintedRef.current = false;
+      return;
+    }
+
+    if (hasAutoPrintedRef.current) return;
+    if (printMode === 'selected' && selectedPrintGroupIds.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      hasAutoPrintedRef.current = true;
+      window.print();
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [checkoutStep, printMode, selectedPrintGroupIds.length]);
 
   const clearCustomerFromGroup = (groupId: string) => {
     setGroups((prev) => prev.map((group) => {
@@ -200,22 +216,15 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     if (!group.redeemPoints || !group.customer) return 0;
     return Math.min(getGroupSubtotal(group), 50);
   };
-  const getGroupCgst = (group: BillGroup) => parseFloat(((getGroupSubtotal(group) - getGroupDiscount(group)) * CGST_RATE).toFixed(2));
-  const getGroupSgst = (group: BillGroup) => parseFloat(((getGroupSubtotal(group) - getGroupDiscount(group)) * SGST_RATE).toFixed(2));
   const getGroupTotal = (group: BillGroup) => {
     const subtotal = getGroupSubtotal(group);
     const discount = getGroupDiscount(group);
-    const cgst = getGroupCgst(group);
-    const sgst = getGroupSgst(group);
-    return parseFloat((subtotal - discount + cgst + sgst).toFixed(2));
+    return parseFloat((subtotal - discount).toFixed(2));
   };
 
   const totalSubtotal = groups.reduce((sum, group) => sum + getGroupSubtotal(group), 0);
   const totalDiscount = groups.reduce((sum, group) => sum + getGroupDiscount(group), 0);
-  const totalCgst = groups.reduce((sum, group) => sum + getGroupCgst(group), 0);
-  const totalSgst = groups.reduce((sum, group) => sum + getGroupSgst(group), 0);
-  const totalGst = parseFloat((totalCgst + totalSgst).toFixed(2));
-  const invoiceTotalBeforeRound = totalSubtotal - totalDiscount + totalGst;
+  const invoiceTotalBeforeRound = totalSubtotal - totalDiscount;
   const roundingAdjustment = parseFloat((Math.round(invoiceTotalBeforeRound) - invoiceTotalBeforeRound).toFixed(2));
   const finalTotal = parseFloat((invoiceTotalBeforeRound + roundingAdjustment).toFixed(2));
   const paidAmount = finalTotal;
@@ -240,7 +249,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
         combinedItems,
         finalTotal,
         totalSubtotal,
-        totalGst,
+        0,
         roundingAdjustment,
         paidAmount,
         paymentMethod || 'CASH'
@@ -267,6 +276,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     setSaleError('');
     setPrintMode('all');
     setSelectedPrintGroupIds([]);
+    hasAutoPrintedRef.current = false;
   };
 
   const printReceipt = () => {
@@ -306,7 +316,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
           <CheckCircle size={64} />
         </div>
         <h2 className="text-2xl font-bold text-[var(--brand-dark)] mb-2">Payment Successful!</h2>
-        <p className="text-[var(--brand-border)] mb-4">Transaction recorded securely. You can print the bill below.</p>
+        <p className="text-[var(--brand-border)] mb-4">Transaction recorded securely. Your receipt is printing automatically.</p>
 
         <div className="mb-4 w-full max-w-md">
             
@@ -367,14 +377,6 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                       <span>-₹{getGroupDiscount(group).toFixed(2)}</span>
                     </div>
                   )}
-                  <div className="flex justify-between text-[10px]">
-                    <span>CGST (9%)</span>
-                    <span>₹{getGroupCgst(group).toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between text-[10px]">
-                    <span>SGST (9%)</span>
-                    <span>₹{getGroupSgst(group).toFixed(2)}</span>
-                  </div>
                   <div className="flex justify-between text-[10px] font-semibold pt-1 border-t border-dashed border-slate-200">
                     <span>Total</span>
                     <span>₹{getGroupTotal(group).toFixed(2)}</span>
@@ -394,7 +396,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
             disabled={printMode === 'selected' && selectedPrintGroupIds.length === 0}
             className={`btn btn-primary transition-all ${printMode === 'selected' && selectedPrintGroupIds.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
           >
-            {printMode === 'selected' ? `Print Selected (${selectedPrintGroupIds.length})` : 'Print All Customers'}
+            {printMode === 'selected' ? `Reprint Selected (${selectedPrintGroupIds.length})` : 'Reprint Receipt'}
           </button>
           <button
             type="button"
@@ -442,14 +444,6 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                             <span>-₹{getGroupDiscount(group).toFixed(2)}</span>
                           </div>
                         )}
-                        <div className="flex justify-between text-[var(--brand-border)] text-xs">
-                          <span>CGST (9%)</span>
-                          <span>₹{getGroupCgst(group).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between text-[var(--brand-border)] text-xs">
-                          <span>SGST (9%)</span>
-                          <span>₹{getGroupSgst(group).toFixed(2)}</span>
-                        </div>
                       </div>
                     ))}
                   </div>
@@ -756,7 +750,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
 
           <div className="space-y-3 mb-4">
             <div className="text-[var(--brand-border)] text-xs">
-              Checkout will show each customer's invoice separately with independent GST and totals.
+              Checkout will show each customer's invoice separately with independent totals.
             </div>
           </div>
 

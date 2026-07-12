@@ -26,6 +26,27 @@ type ListMode = 'active' | 'deleted';
 
 type SortField = 'name' | 'profit' | 'margin' | 'price';
 const ALLOWED_UNITS = ['pcs', 'kg', 'L'];
+const MENU_ITEM_UNITS = [
+  '100 gms',
+  '150 gms',
+  '200 gms',
+  '250 gms',
+  '300 gms',
+  '350 gms',
+  '400 gms',
+  '450 gms',
+  '500 gms',
+  '550 gms',
+  '600 gms',
+  '650 gms',
+  '700 gms',
+  '750 gms',
+  '800 gms',
+  '850 gms',
+  '900 gms',
+  '950 gms',
+  '1 kg'
+];
 
 const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients, inventoryAdjustments, onAddProduct, onAddCategory, onUpdateProduct, onDeleteProduct, onAddIngredient, onUpdateIngredient, onDeleteIngredient, onAdjustProductStock, onAdjustIngredientStock, onFetchDeletedItems, onRestoreProduct, onRestoreIngredient, canEdit = true }) => {
   const [listMode, setListMode] = useState<ListMode>('active');
@@ -61,7 +82,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     cost: '',
     stock: '',
     minStock: '',
-    unit: 'pcs'
+    unit: '100 gms'
   });
 
   const handleSort = (field: SortField) => {
@@ -96,7 +117,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
   }, [categories, formData.category]);
 
   const resetForm = () => {
-    setFormData({ name: '', category: '', price: '', cost: '', stock: '', minStock: '', unit: 'pcs' });
+    setFormData({ name: '', category: '', price: '', cost: '', stock: '', minStock: '', unit: '100 gms' });
     setEditingId(null);
     setIsAddingCategory(false);
     setNewCategory('');
@@ -118,7 +139,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
       cost: product.cost.toString(),
       stock: product.stock.toString(),
       minStock: product.minStock.toString(),
-      unit: ALLOWED_UNITS.includes(product.unit) ? product.unit : 'pcs'
+      unit: MENU_ITEM_UNITS.includes(product.unit) ? product.unit : product.unit || '100 gms'
     });
     setIsModalOpen(true);
   };
@@ -272,7 +293,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
       cost: formData.cost.trim() ? parseFloat(formData.cost) : 0,
       stock: editingId ? (formData.stock.trim() ? parseInt(formData.stock) || 0 : 0) : 0,
       minStock: formData.minStock.trim() ? parseInt(formData.minStock) || 0 : 0,
-      unit: formData.unit || 'pcs'
+      unit: formData.unit || '100 gms'
     };
 
     if (editingId) {
@@ -284,6 +305,13 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     setIsModalOpen(false);
     resetForm();
   };
+
+  const menuItemUnitOptions = useMemo(() => {
+    if (formData.unit && !MENU_ITEM_UNITS.includes(formData.unit)) {
+      return [formData.unit, ...MENU_ITEM_UNITS];
+    }
+    return MENU_ITEM_UNITS;
+  }, [formData.unit]);
 
   const sortedProducts = useMemo(() => {
     return [...products].sort((a, b) => {
@@ -693,9 +721,9 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                     value={formData.unit}
                     onChange={e => setFormData({...formData, unit: e.target.value})}
                   >
-                    <option value="pcs">Pieces (pcs)</option>
-                    <option value="kg">Kilogram (kg)</option>
-                    <option value="L">Liter (L)</option>
+                    {menuItemUnitOptions.map(unit => (
+                      <option key={unit} value={unit}>{unit}</option>
+                    ))}
                   </select>
                 </div>
                 
