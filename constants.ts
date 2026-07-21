@@ -47,6 +47,33 @@ export const parseWeightToGrams = (unit: string): number | null => {
 
 export const isWeightUnit = (unit: string) => parseWeightToGrams(unit) !== null;
 
+export const PIECE_UNIT = 'Piece';
+export const BILLING_PIECE_MAX = 15;
+
+export const isPieceUnit = (unit: string): boolean => {
+  const normalized = unit.trim().toLowerCase();
+  return normalized === 'piece' || normalized === 'pieces' || normalized === 'pcs' || normalized === 'pc';
+};
+
+export const normalizeProductUnit = (unit: string): string => (isPieceUnit(unit) ? PIECE_UNIT : unit);
+
+export const formatPieceCountLabel = (count: number): string =>
+  count === 1 ? '1 Piece' : `${count} Pieces`;
+
+export const getPieceBillingOptions = (pricePerPiece: number) =>
+  Array.from({ length: BILLING_PIECE_MAX }, (_, index) => {
+    const count = index + 1;
+    return {
+      count,
+      amount: parseFloat((pricePerPiece * count).toFixed(2)),
+      label: formatPieceCountLabel(count),
+    };
+  });
+
+export const getPieceCartLineId = (productId: string) => `${productId}::piece`;
+
+export const PRODUCT_UNIT_OPTIONS = [...BILLING_WEIGHT_OPTIONS, PIECE_UNIT];
+
 export const getBaseWeightGrams = (unit: string): number => {
   const parsed = parseWeightToGrams(unit);
   if (parsed && parsed > 0) return parsed;

@@ -1,6 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { Category, Product, Ingredient, InventoryAdjustment } from '../types';
-import { BILLING_WEIGHT_OPTIONS, getWeightPriceBreakdown, formatInventoryUnitPrice } from '../constants';
+import {
+  PRODUCT_UNIT_OPTIONS,
+  PIECE_UNIT,
+  isPieceUnit,
+  normalizeProductUnit,
+  getWeightPriceBreakdown,
+  getPieceBillingOptions,
+  formatInventoryUnitPrice,
+} from '../constants';
 import { ArrowUpDown, AlertCircle, Plus, X, Pencil, Trash2, Tag, Edit3, Box, Archive, RotateCcw } from 'lucide-react';
 
 interface InventoryProps {
@@ -27,7 +35,7 @@ type ListMode = 'active' | 'deleted';
 
 type SortField = 'name' | 'profit' | 'margin' | 'price';
 const ALLOWED_UNITS = ['pcs', 'kg', 'L'];
-const MENU_ITEM_UNITS = BILLING_WEIGHT_OPTIONS;
+const MENU_ITEM_UNITS = PRODUCT_UNIT_OPTIONS;
 
 const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients, inventoryAdjustments, onAddProduct, onAddCategory, onUpdateProduct, onDeleteProduct, onAddIngredient, onUpdateIngredient, onDeleteIngredient, onAdjustProductStock, onAdjustIngredientStock, onFetchDeletedItems, onRestoreProduct, onRestoreIngredient, canEdit = true }) => {
   const [listMode, setListMode] = useState<ListMode>('active');
@@ -120,7 +128,11 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
       cost: product.cost.toString(),
       stock: product.stock.toString(),
       minStock: product.minStock.toString(),
-      unit: MENU_ITEM_UNITS.includes(product.unit) ? product.unit : product.unit || '100 gms'
+      unit: isPieceUnit(product.unit)
+        ? PIECE_UNIT
+        : MENU_ITEM_UNITS.includes(product.unit)
+          ? product.unit
+          : product.unit || '100 gms'
     });
     setIsModalOpen(true);
   };
@@ -274,7 +286,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
       cost: formData.cost.trim() ? parseFloat(formData.cost) : 0,
       stock: editingId ? (formData.stock.trim() ? parseInt(formData.stock) || 0 : 0) : 0,
       minStock: formData.minStock.trim() ? parseInt(formData.minStock) || 0 : 0,
-      unit: formData.unit || '100 gms'
+      unit: normalizeProductUnit(formData.unit || '100 gms')
     };
 
     if (editingId) {
@@ -294,10 +306,15 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     return MENU_ITEM_UNITS;
   }, [formData.unit]);
 
+  const isPieceProduct = isPieceUnit(formData.unit);
+
   const billingPricePreview = useMemo(() => {
     const price = formData.price.trim() ? parseFloat(formData.price) : 0;
     const cost = formData.cost.trim() ? parseFloat(formData.cost) : 0;
     if (!price || !formData.unit) return [];
+    if (isPieceUnit(formData.unit)) {
+      return getPieceBillingOptions(price);
+    }
     return getWeightPriceBreakdown(price, formData.unit, cost);
   }, [formData.price, formData.cost, formData.unit]);
 
@@ -723,7 +740,9 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                 </div>
                 
                 <div className="col-span-1">
-                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Selling Price (₹) for unit</label>
+                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">
+                    {isPieceProduct ? 'Price Per Piece (₹)' : 'Selling Price (₹) for unit'}
+                  </label>
                   <input 
                     type="number" 
                     step="0.01"
@@ -734,7 +753,9 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                   />
                 </div>
                 <div className="col-span-1">
-                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Cost Price (₹) for unit</label>
+                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">
+                    {isPieceProduct ? 'Cost Per Piece (₹)' : 'Cost Price (₹) for unit'}
+                  </label>
                   <input 
                     type="number" 
                     step="0.01"
@@ -758,25 +779,49 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
 
                 {billingPricePreview.length > 0 && (
                   <div className="col-span-2 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-muted)] p-4">
-                    <p className="text-sm font-semibold text-[var(--brand-dark)] mb-1">
-                      Billing auto-prices from {formatInventoryUnitPrice(parseFloat(formData.price || '0'), formData.unit)}
-                    </p>
-                    <p className="text-xs text-[var(--brand-border)] mb-3">
-                      These prices will appear automatically when billing this product.
-                    </p>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {billingPricePreview.map(({ unit, price, isInventoryUnit }) => (
-                        <div
-                          key={unit}
-                          className={`rounded-lg border px-3 py-2 text-center ${
-                            isInventoryUnit ? 'border-[var(--brand-dark)] bg-white' : 'border-[var(--brand-border)] bg-white/80'
-                          }`}
-                        >
-                          <div className="text-xs font-semibold text-[var(--brand-dark)]">{unit}</div>
-                          <div className="text-xs text-[var(--brand-border)] mt-1">₹{price.toFixed(2)}</div>
+                    {isPieceProduct ? (
+                      <>
+                        <p className="text-sm font-semibold text-[var(--brand-dark)] mb-1">
+                          Billing quick-select from {formatInventoryUnitPrice(parseFloat(formData.price || '0'), PIECE_UNIT)}
+                        </p>
+                        <p className="text-xs text-[var(--brand-border)] mb-3">
+                          Cashiers can tap 1–15 pieces during billing. Price per piece cannot be changed at checkout.
+                        </p>
+                        <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                          {billingPricePreview.map(({ count, amount, label }) => (
+                            <div
+                              key={count}
+                              className="rounded-lg border border-[var(--brand-border)] bg-white/80 px-3 py-2 text-center"
+                            >
+                              <div className="text-xs font-semibold text-[var(--brand-dark)]">{label}</div>
+                              <div className="text-xs text-[var(--brand-border)] mt-1">₹{amount.toFixed(2)}</div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm font-semibold text-[var(--brand-dark)] mb-1">
+                          Billing auto-prices from {formatInventoryUnitPrice(parseFloat(formData.price || '0'), formData.unit)}
+                        </p>
+                        <p className="text-xs text-[var(--brand-border)] mb-3">
+                          These prices will appear automatically when billing this product.
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {billingPricePreview.map(({ unit, price, isInventoryUnit }) => (
+                            <div
+                              key={unit}
+                              className={`rounded-lg border px-3 py-2 text-center ${
+                                isInventoryUnit ? 'border-[var(--brand-dark)] bg-white' : 'border-[var(--brand-border)] bg-white/80'
+                              }`}
+                            >
+                              <div className="text-xs font-semibold text-[var(--brand-dark)]">{unit}</div>
+                              <div className="text-xs text-[var(--brand-border)] mt-1">₹{price.toFixed(2)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 

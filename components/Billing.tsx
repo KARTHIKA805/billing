@@ -1,7 +1,7 @@
 import { FC, useState, useMemo, useEffect, useRef } from 'react';
 import { Product, CartItem, Customer } from '../types';
 import { Search, Plus, Minus, CreditCard, CheckCircle, ShoppingBag, User, X, Award, Smartphone, Banknote } from 'lucide-react';
-import { SHOP_QR_CODE_URL, getPriceForWeight, getCostForWeight, getCartLineId, getWeightPriceBreakdown, formatInventoryUnitPrice } from '../constants';
+import { SHOP_QR_CODE_URL, getPriceForWeight, getCostForWeight, getCartLineId, getWeightPriceBreakdown, formatInventoryUnitPrice, isPieceUnit, PIECE_UNIT, getPieceBillingOptions, getPieceCartLineId } from '../constants';
 
 interface BillingProps {
   products: Product[];
@@ -45,6 +45,9 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
   const [printMode, setPrintMode] = useState<'all' | 'selected'>('all');
   const [selectedPrintGroupIds, setSelectedPrintGroupIds] = useState<string[]>([]);
   const [weightPickerProduct, setWeightPickerProduct] = useState<Product | null>(null);
+  const [piecePickerProduct, setPiecePickerProduct] = useState<Product | null>(null);
+  const [selectedWeightUnits, setSelectedWeightUnits] = useState<string[]>([]);
+  const [selectedPieceCounts, setSelectedPieceCounts] = useState<number[]>([]);
   const hasAutoPrintedRef = useRef(false);
 
   const categoryNamesFromProducts = useMemo(() => {
@@ -149,6 +152,58 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     }));
   };
 
+  const addToCartWithPieces = (product: Product, pieceCount: number) => {
+    const unitPrice = product.price;
+    const unitCost = product.cost;
+    const cartLineId = getPieceCartLineId(product.id);
+    const cartItem: CartItem = {
+      ...product,
+      unit: PIECE_UNIT,
+      price: unitPrice,
+      cost: unitCost,
+      quantity: pieceCount,
+      cartLineId,
+    };
+
+    const addItemToGroup = (groupId: string | null, createIfMissing: boolean) => {
+      if (!groupId && createIfMissing) {
+        const groupName = `Customer ${groups.length + 1}`;
+        const group: BillGroup = {
+          id: `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name: groupName,
+          items: [cartItem],
+          redeemPoints: false,
+        };
+        setGroups((prev) => [...prev, group]);
+        setActiveGroupId(group.id);
+        return;
+      }
+
+      setGroups((prev) => prev.map((group) => {
+        if (group.id !== groupId) return group;
+        const existing = group.items.find((item) => item.cartLineId === cartLineId);
+        if (existing) {
+          const newQuantity = Math.min(existing.quantity + pieceCount, product.stock);
+          return {
+            ...group,
+            items: group.items.map((item) => item.cartLineId === cartLineId ? { ...item, quantity: newQuantity } : item),
+          };
+        }
+        return {
+          ...group,
+          items: [...group.items, cartItem],
+        };
+      }));
+    };
+
+    if (!activeGroup) {
+      addItemToGroup(null, true);
+      return;
+    }
+
+    addItemToGroup(activeGroup.id, false);
+  };
+
   const addToCartWithWeight = (product: Product, selectedUnit: string) => {
     const unitPrice = getPriceForWeight(product.price, product.unit, selectedUnit);
     const unitCost = getCostForWeight(product.cost, product.unit, selectedUnit);
@@ -193,16 +248,61 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
   };
 
   const openWeightPicker = (product: Product) => {
+    setPiecePickerProduct(null);
+    setSelectedPieceCounts([]);
+    setSelectedWeightUnits([]);
     setWeightPickerProduct(product);
+  };
+
+  const openPiecePicker = (product: Product) => {
+    setWeightPickerProduct(null);
+    setSelectedWeightUnits([]);
+    setSelectedPieceCounts([]);
+    setPiecePickerProduct(product);
+  };
+
+  const handleProductSelect = (product: Product) => {
+    if (isPieceUnit(product.unit)) {
+      openPiecePicker(product);
+      return;
+    }
+    openWeightPicker(product);
   };
 
   const closeWeightPicker = () => {
     setWeightPickerProduct(null);
+    setSelectedWeightUnits([]);
   };
 
-  const handleWeightSelect = (unit: string) => {
-    if (!weightPickerProduct) return;
-    addToCartWithWeight(weightPickerProduct, unit);
+  const closePiecePicker = () => {
+    setPiecePickerProduct(null);
+    setSelectedPieceCounts([]);
+  };
+
+  const toggleWeightUnitSelection = (unit: string) => {
+    setSelectedWeightUnits((prev) =>
+      prev.includes(unit) ? prev.filter((selected) => selected !== unit) : [...prev, unit]
+    );
+  };
+
+  const togglePieceCountSelection = (count: number) => {
+    setSelectedPieceCounts((prev) =>
+      prev.includes(count) ? prev.filter((selected) => selected !== count) : [...prev, count]
+    );
+  };
+
+  const handleAddSelectedPieces = () => {
+    if (!piecePickerProduct || selectedPieceCounts.length === 0) return;
+    const totalPieces = selectedPieceCounts.reduce((sum, count) => sum + count, 0);
+    addToCartWithPieces(piecePickerProduct, totalPieces);
+    setSelectedPieceCounts([]);
+    closePiecePicker();
+  };
+
+  const handleAddSelectedWeights = () => {
+    if (!weightPickerProduct || selectedWeightUnits.length === 0) return;
+    selectedWeightUnits.forEach((unit) => addToCartWithWeight(weightPickerProduct, unit));
+    setSelectedWeightUnits([]);
     closeWeightPicker();
   };
 
@@ -335,6 +435,29 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     if (!weightPickerProduct) return [];
     return getWeightPriceBreakdown(weightPickerProduct.price, weightPickerProduct.unit, weightPickerProduct.cost);
   }, [weightPickerProduct]);
+
+  const piecePickerOptions = useMemo(() => {
+    if (!piecePickerProduct) return [];
+    return getPieceBillingOptions(piecePickerProduct.price);
+  }, [piecePickerProduct]);
+
+  const selectedWeightTotal = useMemo(() => {
+    if (!weightPickerProduct || selectedWeightUnits.length === 0) return 0;
+    return selectedWeightUnits.reduce((sum, unit) => {
+      return sum + getPriceForWeight(weightPickerProduct.price, weightPickerProduct.unit, unit);
+    }, 0);
+  }, [weightPickerProduct, selectedWeightUnits]);
+
+  const selectedPieceSummary = useMemo(() => {
+    if (!piecePickerProduct || selectedPieceCounts.length === 0) {
+      return { totalPieces: 0, totalAmount: 0 };
+    }
+    const totalPieces = selectedPieceCounts.reduce((sum, count) => sum + count, 0);
+    return {
+      totalPieces,
+      totalAmount: parseFloat((piecePickerProduct.price * totalPieces).toFixed(2)),
+    };
+  }, [piecePickerProduct, selectedPieceCounts]);
 
   const receiptNumber = `INV-${Date.now().toString().slice(-6)}`;
   const receiptTimestamp = new Date().toLocaleString('en-IN', {
@@ -602,7 +725,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
           {filteredProducts.map(product => (
             <button
               key={product.id}
-              onClick={() => openWeightPicker(product)}
+              onClick={() => handleProductSelect(product)}
               disabled={product.stock <= 0}
               className={`p-3 md:p-4 rounded-xl border text-left transition-all relative group ${
                 product.stock <= 0 
@@ -612,11 +735,15 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
             >
               <div className="flex justify-between items-start mb-2">
                 <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider text-[var(--brand-border)] bg-[var(--brand-muted)] px-2 py-0.5 rounded-full">{product.category}</span>
-                <span className="font-bold text-[var(--brand-dark)]">{formatInventoryUnitPrice(product.price, product.unit)}</span>
+                <span className="font-bold text-[var(--brand-dark)]">
+                  {isPieceUnit(product.unit)
+                    ? formatInventoryUnitPrice(product.price, PIECE_UNIT)
+                    : formatInventoryUnitPrice(product.price, product.unit)}
+                </span>
               </div>
               <h4 className="font-medium text-[var(--brand-dark)] mb-1 truncate text-sm md:text-base">{product.name}</h4>
               <p className={`text-xs ${product.stock < 10 ? 'text-[var(--brand-accent)]' : 'text-[var(--brand-border)]'}`}>
-                {product.stock} in stock • tap to choose weight
+                {product.stock} in stock • {isPieceUnit(product.unit) ? 'tap to choose pieces' : 'tap to choose weight'}
               </p>
             </button>
           ))}
@@ -797,6 +924,86 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
         </div>
       </div>
 
+      {piecePickerProduct && (
+        <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[var(--brand-surface)] rounded-2xl shadow-xl w-full max-w-lg overflow-hidden border border-[var(--brand-border)] animate-scale-up">
+            <div className="p-5 border-b border-[var(--brand-border)] bg-[var(--brand-muted)]">
+              <div className="flex justify-between items-start gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-[var(--brand-dark)]">Select Pieces</h3>
+                  <p className="text-sm text-[var(--brand-border)]">{piecePickerProduct.name}</p>
+                  <p className="text-sm font-semibold text-[var(--brand-dark)] mt-2">
+                    Price per piece: {formatInventoryUnitPrice(piecePickerProduct.price, PIECE_UNIT)}
+                  </p>
+                  <p className="text-xs text-[var(--brand-border)] mt-1">
+                    Tap one or more quantities, then add to bill. Amounts are calculated automatically.
+                  </p>
+                </div>
+                <button onClick={closePiecePicker} className="text-[var(--brand-border)] hover:text-[var(--brand-dark)] p-1 shrink-0">
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+            <div className="p-5 max-h-[60vh] overflow-y-auto">
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                {piecePickerOptions.map(({ count, amount, label }) => {
+                  const isSelected = selectedPieceCounts.includes(count);
+                  const outOfStock = count > piecePickerProduct.stock;
+                  return (
+                  <button
+                    key={count}
+                    type="button"
+                    onClick={() => !outOfStock && togglePieceCountSelection(count)}
+                    disabled={outOfStock}
+                    className={`rounded-xl border px-3 py-3 text-center transition-colors ${
+                      outOfStock
+                        ? 'border-[var(--brand-border)] bg-[var(--brand-muted)] opacity-50 cursor-not-allowed'
+                        : isSelected
+                          ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)]/10 hover:bg-[var(--brand-dark)]/15'
+                          : 'border-[var(--brand-border)] bg-white hover:border-[var(--brand-dark)] hover:bg-[var(--brand-muted)]'
+                    }`}
+                  >
+                    <div className="text-sm font-semibold text-[var(--brand-dark)]">{label}</div>
+                    <div className="text-xs text-[var(--brand-border)] mt-1">₹{amount.toFixed(2)}</div>
+                  </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="p-5 border-t border-[var(--brand-border)] bg-[var(--brand-muted)] space-y-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-[var(--brand-border)]">
+                  {selectedPieceCounts.length === 0
+                    ? 'No quantities selected'
+                    : `${selectedPieceCounts.length} option${selectedPieceCounts.length === 1 ? '' : 's'} • ${selectedPieceSummary.totalPieces} piece${selectedPieceSummary.totalPieces === 1 ? '' : 's'}`}
+                </span>
+                <span className="font-semibold text-[var(--brand-dark)]">
+                  {selectedPieceCounts.length > 0 ? `₹${selectedPieceSummary.totalAmount.toFixed(2)}` : '—'}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedPieceCounts([])}
+                  disabled={selectedPieceCounts.length === 0}
+                  className="flex-1 py-3 rounded-xl border border-[var(--brand-border)] bg-white text-[var(--brand-dark)] font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddSelectedPieces}
+                  disabled={selectedPieceCounts.length === 0 || selectedPieceSummary.totalPieces > piecePickerProduct.stock}
+                  className="flex-[2] py-3 rounded-xl bg-[var(--brand-dark)] text-[var(--brand-text-light)] font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Add to Bill
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {weightPickerProduct && (
         <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-[var(--brand-surface)] rounded-2xl shadow-xl w-full max-w-lg overflow-hidden border border-[var(--brand-border)] animate-scale-up">
@@ -809,7 +1016,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                     Inventory price: {formatInventoryUnitPrice(weightPickerProduct.price, weightPickerProduct.unit)}
                   </p>
                   <p className="text-xs text-[var(--brand-border)] mt-1">
-                    All weights below are auto-calculated from inventory.
+                    Tap one or more weights, then add to bill. Prices are auto-calculated from inventory.
                   </p>
                 </div>
                 <button onClick={closeWeightPicker} className="text-[var(--brand-border)] hover:text-[var(--brand-dark)] p-1 shrink-0">
@@ -819,15 +1026,19 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
             </div>
             <div className="p-5 max-h-[60vh] overflow-y-auto">
               <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                {weightPickerOptions.map(({ unit, price, isInventoryUnit }) => (
+                {weightPickerOptions.map(({ unit, price, isInventoryUnit }) => {
+                  const isSelected = selectedWeightUnits.includes(unit);
+                  return (
                   <button
                     key={unit}
                     type="button"
-                    onClick={() => handleWeightSelect(unit)}
+                    onClick={() => toggleWeightUnitSelection(unit)}
                     className={`rounded-xl border px-3 py-3 text-center transition-colors ${
-                      isInventoryUnit
+                      isSelected
                         ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)]/10 hover:bg-[var(--brand-dark)]/15'
-                        : 'border-[var(--brand-border)] bg-white hover:border-[var(--brand-dark)] hover:bg-[var(--brand-muted)]'
+                        : isInventoryUnit
+                          ? 'border-[var(--brand-border)] bg-white hover:border-[var(--brand-dark)] hover:bg-[var(--brand-muted)]'
+                          : 'border-[var(--brand-border)] bg-white hover:border-[var(--brand-dark)] hover:bg-[var(--brand-muted)]'
                     }`}
                   >
                     <div className="text-sm font-semibold text-[var(--brand-dark)]">{unit}</div>
@@ -838,7 +1049,38 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                       </div>
                     )}
                   </button>
-                ))}
+                  );
+                })}
+              </div>
+            </div>
+            <div className="p-5 border-t border-[var(--brand-border)] bg-[var(--brand-muted)] space-y-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-[var(--brand-border)]">
+                  {selectedWeightUnits.length === 0
+                    ? 'No weights selected'
+                    : `${selectedWeightUnits.length} weight${selectedWeightUnits.length === 1 ? '' : 's'} selected`}
+                </span>
+                <span className="font-semibold text-[var(--brand-dark)]">
+                  {selectedWeightUnits.length > 0 ? `₹${selectedWeightTotal.toFixed(2)}` : '—'}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedWeightUnits([])}
+                  disabled={selectedWeightUnits.length === 0}
+                  className="flex-1 py-3 rounded-xl border border-[var(--brand-border)] bg-white text-[var(--brand-dark)] font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddSelectedWeights}
+                  disabled={selectedWeightUnits.length === 0}
+                  className="flex-[2] py-3 rounded-xl bg-[var(--brand-dark)] text-[var(--brand-text-light)] font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Add to Bill
+                </button>
               </div>
             </div>
           </div>
