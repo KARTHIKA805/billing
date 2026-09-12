@@ -556,8 +556,8 @@ const Dashboard: React.FC<DashboardProps> = ({ sales, products, dailyStats }) =>
         <div className="p-6 border-b border-slate-100">
           <h3 className="font-bold text-slate-800">Recent Transactions</h3>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
+        <div className="data-table-wrap">
+          <table className="data-table">
             <thead className="bg-slate-50 border-b border-slate-100">
               <tr>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Time</th>

@@ -137,6 +137,9 @@ export const MOCK_CUSTOMERS: Customer[] = [
   { id: 'c3', name: 'Priya Singh', phone: '9876500002', email: 'priya@example.com', loyaltyPoints: 310, totalSpent: 8900.75, joinDate: new Date('2022-11-05') },
 ];
 
+export const SHOP_NAME = 'Suvai Bakery';
+export const SHOP_ADDRESS = 'Main Road, Your City, Tamil Nadu';
+export const SHOP_PHONE = '+91 98765 43210';
+
 // Placeholder for Shop QR Code (UPI)
-// In a real app, this would be uploaded by the admin
-export const SHOP_QR_CODE_URL = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=upi://pay?pa=bakery@upi&pn=CrumbAndCo&mc=5462&tid=123456&tr=123456&tn=BakeryPayment&am=0&cu=INR";
+export const SHOP_QR_CODE_URL = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=upi://pay?pa=bakery@upi&pn=SuvaiBakery&mc=5462&tid=123456&tr=123456&tn=BakeryPayment&am=0&cu=INR";

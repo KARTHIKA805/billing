@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
 import {
   signIn as supabaseSignIn,
   signOut as supabaseSignOut,
   supabase,
   getUser,
   getUserRole,
+  resolveUserRoleFromMetadata,
   getProducts,
   getCategories,
   getSales,
@@ -20,25 +21,38 @@ import {
   updateIngredient as apiUpdateIngredient,
   deleteProduct as apiDeleteProduct,
   deleteIngredient as apiDeleteIngredient,
+  getDeletedProducts,
+  getDeletedIngredients,
+  restoreProduct as apiRestoreProduct,
+  restoreIngredient as apiRestoreIngredient,
   addCustomer as apiAddCustomer,
   deleteCustomer as apiDeleteCustomer,
-  createSale as apiCreateSale
+  createSale as apiCreateSale,
+  updateSale as apiUpdateSale,
+  voidSale as apiVoidSale
 } from './services/supabaseService';
 import { ViewState, Product, SaleRecord, CartItem, Customer, DailyStat, UserRole, Category, Ingredient, InventoryAdjustment } from './types';
 import { MOCK_DAILY_STATS } from './constants';
-
-
-import Dashboard from './components/Dashboard';
-import EmployeeDashboard from './components/EmployeeDashboard';
 import Billing from './components/Billing';
-import Inventory from './components/Inventory';
-import Customers from './components/Customers';
-import Users from './components/Users';
 import Layout from "./components/Layout";
-import Categories from './components/Categories';
 import { updateCategory, deleteCategory } from './services/supabaseService';
+import { clearAppDataCache, loadAppDataCache, saveAppDataCache } from './utils/dataCache';
 
 import { Lock, User, Loader2 } from 'lucide-react';
+
+const Dashboard = lazy(() => import('./components/Dashboard'));
+const EmployeeDashboard = lazy(() => import('./components/EmployeeDashboard'));
+const BillsHistory = lazy(() => import('./components/BillsHistory'));
+const Inventory = lazy(() => import('./components/Inventory'));
+const Customers = lazy(() => import('./components/Customers'));
+const Users = lazy(() => import('./components/Users'));
+const Categories = lazy(() => import('./components/Categories'));
+
+const PageLoader = () => (
+  <div className="flex items-center justify-center py-16">
+    <Loader2 className="animate-spin text-[var(--brand-dark)]" size={32} />
+  </div>
+);
 
 const DEMO_AUTH_STORAGE_KEY = 'suvai_demo_auth';
 
@@ -181,11 +195,21 @@ const App: React.FC = () => {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session?.user) return;
 
-        const role = await getUserRole(session.user);
+        const quickRole = resolveUserRoleFromMetadata(session.user) ?? UserRole.ADMIN;
         if (!isMounted) return;
-        setUserRole(role);
+        setUserRole(quickRole);
         setIsLoggedIn(true);
-        setCurrentView(role === UserRole.EMPLOYEE ? ViewState.BILLING : ViewState.DASHBOARD);
+        setCurrentView(quickRole === UserRole.EMPLOYEE ? ViewState.BILLING : ViewState.DASHBOARD);
+
+        getUserRole(session.user)
+          .then((verifiedRole) => {
+            if (!isMounted) return;
+            setUserRole(verifiedRole);
+            setCurrentView(verifiedRole === UserRole.EMPLOYEE ? ViewState.BILLING : ViewState.DASHBOARD);
+          })
+          .catch((error) => {
+            console.error('Failed to verify user role:', error);
+          });
       } catch (error) {
         console.error('Failed to restore session:', error);
       } finally {
@@ -203,8 +227,8 @@ const App: React.FC = () => {
       };
     }
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (sessionStorage.getItem(DEMO_AUTH_STORAGE_KEY)) return;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'INITIAL_SESSION' || sessionStorage.getItem(DEMO_AUTH_STORAGE_KEY)) return;
 
       if (session?.user) {
         try {
@@ -218,6 +242,7 @@ const App: React.FC = () => {
       } else if (isMounted) {
         setIsLoggedIn(false);
         setUserRole(null);
+        clearAppDataCache();
       }
     });
 
@@ -227,24 +252,55 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Fetch Data when Logged In
-  const fetchData = async () => {
-    setIsLoadingData(true);
+  const hydrateFromCache = () => {
+    const cached = loadAppDataCache();
+    if (!cached?.products?.length) return false;
+
+    setProducts(cached.products);
+    setCategories(cached.categories);
+    setCustomers(cached.customers);
+    setIngredients(cached.ingredients);
+    setSales(cached.sales);
+    setInventoryAdjustments(cached.inventoryAdjustments);
+    return true;
+  };
+
+  const fetchData = async (options?: { background?: boolean }) => {
+    const hasCachedProducts = products.length > 0;
+    const isBackground = options?.background ?? hasCachedProducts;
+    if (!isBackground) setIsLoadingData(true);
+
     try {
-      const [prods, cats, ings, adjustments, sls, custs] = await Promise.all([
+      const [prods, cats, custs] = await Promise.all([
         getProducts(),
         getCategories(),
-        getIngredients(),
-        getInventoryAdjustments(),
-        getSales(),
-        getCustomers()
+        getCustomers(),
       ]);
+
       setProducts(prods);
       setCategories(cats);
+      setCustomers(custs);
+
+      if (!isBackground) setIsLoadingData(false);
+
+      const [ings, adjustments, sls] = await Promise.all([
+        getIngredients(),
+        getInventoryAdjustments(),
+        getSales(prods),
+      ]);
+
       setIngredients(ings);
       setInventoryAdjustments(adjustments);
       setSales(sls);
-      setCustomers(custs);
+
+      saveAppDataCache({
+        products: prods,
+        categories: cats,
+        customers: custs,
+        ingredients: ings,
+        sales: sls,
+        inventoryAdjustments: adjustments,
+      });
     } catch (error) {
       console.error("Failed to fetch data:", error);
     } finally {
@@ -253,16 +309,28 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    if (isLoggedIn) {
-      fetchData();
-    }
+    if (!isLoggedIn) return;
+    const hasCache = hydrateFromCache();
+    if (!hasCache) setIsLoadingData(true);
+    fetchData({ background: hasCache });
   }, [isLoggedIn]);
 
   useEffect(() => {
-    if (userRole === UserRole.EMPLOYEE && [ViewState.DASHBOARD, ViewState.USERS].includes(currentView)) {
+    if (userRole === UserRole.EMPLOYEE && [ViewState.USERS, ViewState.CATEGORIES].includes(currentView)) {
       setCurrentView(ViewState.BILLING);
     }
   }, [currentView, userRole]);
+
+  const salesTodayTotal = useMemo(() => {
+    const now = new Date();
+    return sales
+      .filter((sale) =>
+        sale.timestamp.getFullYear() === now.getFullYear() &&
+        sale.timestamp.getMonth() === now.getMonth() &&
+        sale.timestamp.getDate() === now.getDate()
+      )
+      .reduce((sum, sale) => sum + sale.total, 0);
+  }, [sales]);
 
   useEffect(() => {
     // Calculate notifications based on low stock
@@ -276,41 +344,92 @@ const App: React.FC = () => {
     setNotifications(notifs);
   }, [products, ingredients]);
 
-  const handleCompleteSale = async (
-    items: CartItem[],
-    total: number,
-    subtotal: number,
-    taxAmount: number,
-    roundingAdjustment: number,
-    paidAmount: number,
-    paymentMethod: 'CASH' | 'UPI' | 'OTHER',
-    customerId?: string,
-    pointsRedeemed: number = 0,
-    discountAmount: number = 0
-  ): Promise<void> => {
-    const pointsEarned = Math.floor(total);
+  const applySaleResultsLocally = (createdSales: SaleRecord[]) => {
+    if (createdSales.length === 0) return;
 
-    const newSale: SaleRecord = {
-      id: '', // Will be generated by DB
+    setSales((prev) => [...createdSales, ...prev]);
+
+    const qtyByProduct = new Map<string, number>();
+    const customerUpdates = new Map<string, { pointsDelta: number; totalDelta: number }>();
+
+    for (const sale of createdSales) {
+      for (const item of sale.items) {
+        if (!item.id) continue;
+        qtyByProduct.set(item.id, (qtyByProduct.get(item.id) || 0) + item.quantity);
+      }
+      if (sale.customerId) {
+        const existing = customerUpdates.get(sale.customerId) || { pointsDelta: 0, totalDelta: 0 };
+        existing.pointsDelta += (sale.pointsEarned ?? 0) - (sale.pointsRedeemed ?? 0);
+        existing.totalDelta += sale.total;
+        customerUpdates.set(sale.customerId, existing);
+      }
+    }
+
+    setProducts((prev) => prev.map((product) => {
+      const soldQty = qtyByProduct.get(product.id);
+      if (!soldQty) return product;
+      return { ...product, stock: Math.max(0, product.stock - soldQty) };
+    }));
+
+    setCustomers((prev) => prev.map((customer) => {
+      const update = customerUpdates.get(customer.id);
+      if (!update) return customer;
+      return {
+        ...customer,
+        loyaltyPoints: customer.loyaltyPoints + update.pointsDelta,
+        totalSpent: customer.totalSpent + update.totalDelta,
+      };
+    }));
+  };
+
+  const refreshAfterSale = async () => {
+    try {
+      const [prods, custs] = await Promise.all([getProducts(), getCustomers()]);
+      setProducts(prods);
+      setCustomers(custs);
+
+      const cached = loadAppDataCache();
+      if (cached) {
+        saveAppDataCache({
+          ...cached,
+          products: prods,
+          customers: custs,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to refresh after sale:', error);
+    }
+  };
+
+  const handleCompleteSales = async (salesPayload: Omit<SaleRecord, 'id' | 'timestamp'>[]): Promise<SaleRecord[]> => {
+    const pendingSales: SaleRecord[] = salesPayload.map((salePayload) => ({
+      id: '',
       timestamp: new Date(),
-      items,
-      subtotal,
-      taxAmount,
-      roundingAdjustment,
-      total,
-      paidAmount,
-      paymentMethod,
-      customerId,
-      pointsEarned,
-      pointsRedeemed,
-      discountAmount
-    };
+      ...salePayload,
+      pointsEarned: salePayload.pointsEarned ?? Math.floor(salePayload.total),
+    }));
 
-    // Let errors propagate to Billing.tsx so it can show inline error messages
-    await apiCreateSale(newSale);
+    const saleIds = await Promise.all(pendingSales.map((sale) => apiCreateSale(sale)));
+    const createdSales = pendingSales.map((sale, index) => ({
+      ...sale,
+      id: saleIds[index],
+      timestamp: new Date(),
+    }));
 
-    // Refresh data in background after successful sale
-    fetchData().catch(err => console.warn('Background refresh failed:', err));
+    applySaleResultsLocally(createdSales);
+    void refreshAfterSale();
+
+    return createdSales;
+  };
+
+  const handleUpdateSale = async (sale: SaleRecord) => {
+    await apiUpdateSale(sale);
+    await fetchData({ background: true });
+  };
+
+  const handleVoidSale = async (sale: SaleRecord) => {
+    await apiVoidSale(sale);
+    await fetchData({ background: true });
   };
 
   const handleAddCustomer = async (customerData: Omit<Customer, 'id' | 'joinDate' | 'loyaltyPoints' | 'totalSpent'>) => {
@@ -323,7 +442,7 @@ const App: React.FC = () => {
         }
       }
       await apiAddCustomer(customerData);
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error) {
       console.error("Failed to add customer:", error);
       alert("Failed to add customer.");
@@ -333,7 +452,7 @@ const App: React.FC = () => {
   const handleDeleteCustomer = async (customerId: string) => {
     try {
       await apiDeleteCustomer(customerId);
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error("Failed to delete customer:", error);
       const msg = error?.message || error?.error_description || JSON.stringify(error);
@@ -344,7 +463,7 @@ const App: React.FC = () => {
   const handleAddProduct = async (productData: Omit<Product, 'id'>) => {
     try {
       await apiAddProduct(productData);
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error("Failed to add product:", error);
       const msg = error?.message || error?.error_description || JSON.stringify(error);
@@ -368,7 +487,7 @@ const App: React.FC = () => {
   const handleUpdateProduct = async (updatedProduct: Product) => {
     try {
       await apiUpdateProduct(updatedProduct);
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error("Failed to update product:", error);
       const msg = error?.message || error?.error_description || JSON.stringify(error);
@@ -379,7 +498,7 @@ const App: React.FC = () => {
   const handleDeleteProduct = async (productId: string) => {
     try {
       await apiDeleteProduct(productId);
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error("Failed to delete product:", error);
       const msg = error?.message || error?.error_description || JSON.stringify(error);
@@ -387,10 +506,42 @@ const App: React.FC = () => {
     }
   };
 
+  const handleFetchDeletedItems = async () => {
+    const [deletedProducts, deletedIngredients] = await Promise.all([
+      getDeletedProducts(),
+      getDeletedIngredients()
+    ]);
+    return { products: deletedProducts, ingredients: deletedIngredients };
+  };
+
+  const handleRestoreProduct = async (productId: string) => {
+    try {
+      await apiRestoreProduct(productId);
+      await fetchData({ background: true });
+    } catch (error: any) {
+      console.error('Failed to restore product:', error);
+      const msg = error?.message || error?.error_description || JSON.stringify(error);
+      alert(`Failed to restore product.\n\nError: ${msg}`);
+      throw error;
+    }
+  };
+
+  const handleRestoreIngredient = async (ingredientId: string) => {
+    try {
+      await apiRestoreIngredient(ingredientId);
+      await fetchData({ background: true });
+    } catch (error: any) {
+      console.error('Failed to restore ingredient:', error);
+      const msg = error?.message || error?.error_description || JSON.stringify(error);
+      alert(`Failed to restore ingredient.\n\nError: ${msg}`);
+      throw error;
+    }
+  };
+
   const handleAddIngredient = async (ingredientData: Omit<Ingredient, 'id' | 'createdAt'>) => {
     try {
       await apiAddIngredient(ingredientData);
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error('Failed to add ingredient:', error);
       const msg = error?.message || error?.error_description || JSON.stringify(error);
@@ -401,7 +552,7 @@ const App: React.FC = () => {
   const handleUpdateIngredient = async (updatedIngredient: Ingredient) => {
     try {
       await apiUpdateIngredient(updatedIngredient);
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error('Failed to update ingredient:', error);
       const msg = error?.message || error?.error_description || JSON.stringify(error);
@@ -412,7 +563,7 @@ const App: React.FC = () => {
   const handleDeleteIngredient = async (ingredientId: string) => {
     try {
       await apiDeleteIngredient(ingredientId);
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error('Failed to delete ingredient:', error);
       const msg = error?.message || error?.error_description || JSON.stringify(error);
@@ -423,7 +574,7 @@ const App: React.FC = () => {
   const handleAdjustProductStock = async (productId: string, adjustment: number, reason: string) => {
     try {
       await apiAdjustProductStock(productId, adjustment, reason, userRole ?? 'system');
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error('Failed to adjust product stock:', error);
       alert(`Failed to adjust stock. ${error?.message || ''}`);
@@ -433,7 +584,7 @@ const App: React.FC = () => {
   const handleAdjustIngredientStock = async (ingredientId: string, adjustment: number, reason: string) => {
     try {
       await apiAdjustIngredientStock(ingredientId, adjustment, reason, userRole ?? 'system');
-      await fetchData();
+      await fetchData({ background: true });
     } catch (error: any) {
       console.error('Failed to adjust ingredient stock:', error);
       alert(`Failed to adjust ingredient stock. ${error?.message || ''}`);
@@ -480,6 +631,7 @@ const App: React.FC = () => {
   return (
     <Layout
       currentView={currentView}
+      fillViewport={currentView === ViewState.BILLING}
       onChangeView={setCurrentView}
       onLogout={async () => {
         try {
@@ -488,65 +640,81 @@ const App: React.FC = () => {
         } catch (err) {
           console.warn('Sign-out failed:', err);
         }
+        clearAppDataCache();
         setIsLoggedIn(false);
         setUserRole(null);
       }}
       notifications={notifications}
       userRole={userRole ?? UserRole.ADMIN}
     >
-      {currentView === ViewState.DASHBOARD && (
-        userRole === UserRole.EMPLOYEE ? (
-          <EmployeeDashboard sales={sales} products={products} dailyStats={MOCK_DAILY_STATS} />
-        ) : (
-          <Dashboard sales={sales} products={products} dailyStats={MOCK_DAILY_STATS} />
-        )
-      )}
-      {currentView === ViewState.BILLING && (
-        <Billing
-          products={products}
-          customers={customers}
-          categories={categories}
-          onCompleteSale={handleCompleteSale}
-        />
-      )}
-      {currentView === ViewState.CUSTOMERS && (
-        <Customers
-          customers={customers}
-          sales={sales}
-          onAddCustomer={handleAddCustomer}
-          onDeleteCustomer={handleDeleteCustomer}
-        />
-      )}
-      {currentView === ViewState.USERS && userRole === UserRole.ADMIN && (
-        <Users />
-      )}
-      {currentView === ViewState.INVENTORY && (
-        <Inventory
+      <Suspense fallback={<PageLoader />}>
+        {currentView === ViewState.DASHBOARD && (
+          userRole === UserRole.EMPLOYEE ? (
+            <EmployeeDashboard sales={sales} products={products} dailyStats={MOCK_DAILY_STATS} />
+          ) : (
+            <Dashboard sales={sales} products={products} dailyStats={MOCK_DAILY_STATS} />
+          )
+        )}
+        {currentView === ViewState.BILLING && (
+          <Billing
             products={products}
+            customers={customers}
             categories={categories}
-            ingredients={ingredients}
-            inventoryAdjustments={inventoryAdjustments}
-            onAddProduct={handleAddProduct}
+            salesTodayTotal={salesTodayTotal}
+            onCompleteSales={handleCompleteSales}
+          />
+        )}
+        {currentView === ViewState.BILLS && (
+          <BillsHistory
+            sales={sales}
+            customers={customers}
+            userRole={userRole ?? UserRole.ADMIN}
+            onUpdateSale={handleUpdateSale}
+            onVoidSale={handleVoidSale}
+          />
+        )}
+        {currentView === ViewState.CUSTOMERS && (
+          <Customers
+            customers={customers}
+            sales={sales}
+            onAddCustomer={handleAddCustomer}
+            onDeleteCustomer={handleDeleteCustomer}
+          />
+        )}
+        {currentView === ViewState.USERS && userRole === UserRole.ADMIN && (
+          <Users />
+        )}
+        {currentView === ViewState.INVENTORY && (
+          <Inventory
+              products={products}
+              categories={categories}
+              ingredients={ingredients}
+              inventoryAdjustments={inventoryAdjustments}
+              onAddProduct={handleAddProduct}
+              onAddCategory={handleAddCategory}
+              onAddIngredient={handleAddIngredient}
+              onUpdateIngredient={handleUpdateIngredient}
+              onDeleteIngredient={handleDeleteIngredient}
+              onUpdateProduct={handleUpdateProduct}
+              onDeleteProduct={handleDeleteProduct}
+              onAdjustProductStock={handleAdjustProductStock}
+              onAdjustIngredientStock={handleAdjustIngredientStock}
+              onFetchDeletedItems={handleFetchDeletedItems}
+              onRestoreProduct={handleRestoreProduct}
+              onRestoreIngredient={handleRestoreIngredient}
+              canEdit={userRole === UserRole.ADMIN}
+            />
+        )}
+        {currentView === ViewState.CATEGORIES && userRole === UserRole.ADMIN && (
+          <Categories
+            categories={categories}
             onAddCategory={handleAddCategory}
-            onAddIngredient={handleAddIngredient}
-            onUpdateIngredient={handleUpdateIngredient}
-            onDeleteIngredient={handleDeleteIngredient}
-            onUpdateProduct={handleUpdateProduct}
-            onDeleteProduct={handleDeleteProduct}
-            onAdjustProductStock={handleAdjustProductStock}
-            onAdjustIngredientStock={handleAdjustIngredientStock}
+            onUpdateCategory={async (id, name, file) => { try { await updateCategory(id, name, file as any); const latest = await getCategories(); setCategories(latest); } catch (err) { console.error(err); alert('Failed to update category'); } }}
+            onDeleteCategory={async (id) => { try { await deleteCategory(id); const latest = await getCategories(); setCategories(latest); } catch (err) { console.error(err); alert('Failed to delete category'); } }}
             canEdit={userRole === UserRole.ADMIN}
           />
-      )}
-      {currentView === ViewState.CATEGORIES && userRole === UserRole.ADMIN && (
-        <Categories
-          categories={categories}
-          onAddCategory={handleAddCategory}
-          onUpdateCategory={async (id, name, file) => { try { await updateCategory(id, name, file as any); const latest = await getCategories(); setCategories(latest); } catch (err) { console.error(err); alert('Failed to update category'); } }}
-          onDeleteCategory={async (id) => { try { await deleteCategory(id); const latest = await getCategories(); setCategories(latest); } catch (err) { console.error(err); alert('Failed to delete category'); } }}
-          canEdit={userRole === UserRole.ADMIN}
-        />
-      )}
+        )}
+      </Suspense>
     </Layout>
   );
 };

@@ -169,6 +169,26 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     }
   };
 
+  const handleRestoreProduct = async (id: string) => {
+    try {
+      await onRestoreProduct(id);
+      setDeletedProducts((prev) => prev.filter((product) => product.id !== id));
+    } catch (error) {
+      console.error('Failed to restore product:', error);
+      alert('Failed to restore product.');
+    }
+  };
+
+  const handleRestoreIngredient = async (id: string) => {
+    try {
+      await onRestoreIngredient(id);
+      setDeletedIngredients((prev) => prev.filter((ingredient) => ingredient.id !== id));
+    } catch (error) {
+      console.error('Failed to restore ingredient:', error);
+      alert('Failed to restore ingredient.');
+    }
+  };
+
   const openProductAdjustment = (product: Product) => {
     setSelectedProductForAdjust(product);
     setSelectedIngredientForAdjust(null);
@@ -333,7 +353,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
             : b.name.localeCompare(a.name, undefined, { sensitivity: 'base' });
         case 'price': valA = a.price; valB = b.price; break;
         case 'profit': valA = profitA; valB = profitB; break;
-        case 'margin': valA = ((profitA / a.price) * 100); valB = ((profitB / b.price) * 100); break;
+        case 'margin': valA = a.price > 0 ? (profitA / a.price) * 100 : 0; valB = b.price > 0 ? (profitB / b.price) * 100 : 0; break;
       }
 
       if (valA < valB) return sortDir === 'asc' ? -1 : 1;
@@ -408,6 +428,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
         </div>
       </div>
 
+      {listMode === 'active' ? (
       <div className="bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm overflow-hidden">
         <div className="category-strip-toolbar">
           <span className="category-strip-toolbar__label">Browse by category</span>
@@ -453,13 +474,13 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
             </div>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
+        <div className="data-table-wrap">
+          <table className="data-table">
             <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
               <tr>
                 <TableHeader field="name" label="Product" />
                 <TableHeader field="price" label="Price" />
-                <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider hidden md:table-cell">Cost</th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Cost</th>
                 <TableHeader field="profit" label="Profit / Unit" />
                 <TableHeader field="margin" label="Margin" />
                 <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Status</th>
@@ -467,9 +488,16 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredProducts.map((product) => {
+              {filteredProducts.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-6 py-10 text-center text-[var(--brand-border)]">
+                    No products found for this category.
+                  </td>
+                </tr>
+              ) : filteredProducts.map((product) => {
                 const profit = product.price - product.cost;
-                const margin = ((profit / product.price) * 100).toFixed(0);
+                const marginValue = product.price > 0 ? ((profit / product.price) * 100) : 0;
+                const margin = marginValue.toFixed(0);
                 const isLowStock = product.stock <= product.minStock;
 
                 return (
@@ -481,10 +509,10 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                       </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-[var(--brand-text-dark)]">₹{product.price.toFixed(2)}</td>
-                    <td className="px-6 py-4 text-sm text-[var(--brand-border)] hidden md:table-cell">₹{product.cost.toFixed(2)}</td>
+                    <td className="px-6 py-4 text-sm text-[var(--brand-border)]">₹{product.cost.toFixed(2)}</td>
                     <td className="px-6 py-4 text-sm text-[var(--brand-dark)]">+₹{profit.toFixed(2)}</td>
                     <td className="px-6 py-4">
-                      <span className={`inline-flex items-center justify-center rounded-full px-2 py-1 text-xs font-semibold ${margin >= 30 ? 'bg-emerald-100 text-emerald-700' : margin >= 15 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>
+                      <span className={`inline-flex items-center justify-center rounded-full px-2 py-1 text-xs font-semibold ${marginValue >= 30 ? 'bg-emerald-100 text-emerald-700' : marginValue >= 15 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>
                         {margin}%
                       </span>
                     </td>
@@ -492,12 +520,12 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                       {isLowStock ? (
                         <div className="flex items-center gap-1.5 text-[var(--brand-dark)] bg-[var(--brand-accent)]/20 px-2 py-1 rounded-full w-fit">
                           <AlertCircle size={14} />
-                          <span className="text-xs font-medium hidden sm:inline">Low Stock</span>
+                          <span className="text-xs font-medium">Low Stock</span>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5 text-[var(--brand-border)]">
                           <div className="w-2 h-2 rounded-full bg-[var(--brand-accent)]"></div>
-                          <span className="text-xs hidden sm:inline">OK</span>
+                          <span className="text-xs">OK</span>
                         </div>
                       )}
                     </td>
@@ -537,7 +565,100 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
           </table>
         </div>
       </div>
+      ) : (
+      <div className="bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-[var(--brand-border)] bg-[var(--brand-muted)]">
+          <h3 className="text-lg font-bold text-[var(--brand-dark)]">Deleted Items</h3>
+          <p className="text-sm text-[var(--brand-border)]">Restore products or ingredients removed from the menu.</p>
+        </div>
+        {isLoadingDeleted ? (
+          <div className="px-6 py-12 text-center text-[var(--brand-border)]">Loading deleted items...</div>
+        ) : (
+          <div className="divide-y divide-[var(--brand-border)]">
+            <div className="data-table-wrap">
+              <table className="data-table">
+                <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Deleted Product</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Category</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Price</th>
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--brand-border)]">
+                  {deletedProducts.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-8 text-center text-[var(--brand-border)]">No deleted products.</td>
+                    </tr>
+                  ) : deletedProducts.map((product) => (
+                    <tr key={product.id} className="hover:bg-[var(--brand-muted)]/60">
+                      <td className="px-6 py-4 font-medium text-[var(--brand-dark)]">{product.name}</td>
+                      <td className="px-6 py-4 text-sm text-[var(--brand-border)]">{product.category || '—'}</td>
+                      <td className="px-6 py-4 text-sm text-[var(--brand-text-dark)]">₹{product.price.toFixed(2)}</td>
+                      <td className="px-6 py-4 text-right">
+                        {canEdit ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreProduct(product.id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
+                          >
+                            <RotateCcw size={14} />
+                            Restore
+                          </button>
+                        ) : (
+                          <span className="text-sm text-[var(--brand-border)]">View only</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
+            <div className="data-table-wrap">
+              <table className="data-table">
+                <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Deleted Ingredient</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Unit</th>
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--brand-border)]">
+                  {deletedIngredients.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-6 py-8 text-center text-[var(--brand-border)]">No deleted ingredients.</td>
+                    </tr>
+                  ) : deletedIngredients.map((ingredient) => (
+                    <tr key={ingredient.id} className="hover:bg-[var(--brand-muted)]/60">
+                      <td className="px-6 py-4 font-medium text-[var(--brand-dark)]">{ingredient.name}</td>
+                      <td className="px-6 py-4 text-sm text-[var(--brand-border)]">{ingredient.unit}</td>
+                      <td className="px-6 py-4 text-right">
+                        {canEdit ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreIngredient(ingredient.id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
+                          >
+                            <RotateCcw size={14} />
+                            Restore
+                          </button>
+                        ) : (
+                          <span className="text-sm text-[var(--brand-border)]">View only</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+      )}
+
+      {listMode === 'active' && (
+      <>
       {/* Ingredient Inventory + Adjustment History */}
       <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
         <div className="bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm overflow-hidden">
@@ -554,8 +675,8 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
               <Plus size={16} /> Add Ingredient
             </button>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full">
+          <div className="data-table-wrap">
+            <table className="data-table">
               <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Ingredient</th>
@@ -652,6 +773,8 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
           </div>
         </div>
       </div>
+      </>
+      )}
 
       {/* Add/Edit Product Modal */}
       {isModalOpen && (

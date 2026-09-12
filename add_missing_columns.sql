@@ -69,3 +69,20 @@ select 'Migration complete. Sales and categories tables and storage bucket now h
 -- ============================================================
 alter table products add column if not exists deleted_at timestamp with time zone;
 alter table ingredients add column if not exists deleted_at timestamp with time zone;
+
+-- ============================================================
+-- MIGRATION: Fix delete failures from inventory_adjustments FK
+-- ============================================================
+alter table inventory_adjustments drop constraint if exists inventory_adjustments_product_id_fkey;
+alter table inventory_adjustments
+  add constraint inventory_adjustments_product_id_fkey
+  foreign key (product_id) references products(id) on delete set null;
+
+alter table inventory_adjustments drop constraint if exists inventory_adjustments_ingredient_id_fkey;
+alter table inventory_adjustments
+  add constraint inventory_adjustments_ingredient_id_fkey
+  foreign key (ingredient_id) references ingredients(id) on delete set null;
+
+-- Split payment support on sales
+alter table sales add column if not exists cash_paid numeric default 0;
+alter table sales add column if not exists upi_paid numeric default 0;

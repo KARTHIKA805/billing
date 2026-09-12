@@ -61,8 +61,8 @@ const Customers: React.FC<CustomersProps> = ({ customers, sales, onAddCustomer, 
 
       {/* Customer List */}
       <div className="bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
+        <div className="data-table-wrap">
+          <table className="data-table">
             <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
               <tr>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Customer</th>

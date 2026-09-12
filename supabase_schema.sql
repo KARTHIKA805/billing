@@ -61,6 +61,8 @@ create table if not exists sales (
   points_earned numeric default 0,
   points_redeemed numeric default 0,
   discount_amount numeric default 0,
+  cash_paid numeric default 0,
+  upi_paid numeric default 0,
   created_by text not null default 'system'
 );
 
@@ -97,8 +99,8 @@ create table if not exists product_ingredients (
 -- Inventory stock adjustment history
 create table if not exists inventory_adjustments (
   id uuid default uuid_generate_v4() primary key,
-  product_id uuid references products(id),
-  ingredient_id uuid references ingredients(id),
+  product_id uuid references products(id) on delete set null,
+  ingredient_id uuid references ingredients(id) on delete set null,
   adjustment numeric not null,
   reason text not null,
   created_by text not null default 'system',

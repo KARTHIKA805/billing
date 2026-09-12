@@ -2,6 +2,7 @@ export enum ViewState {
   LOGIN = 'LOGIN',
   DASHBOARD = 'DASHBOARD',
   BILLING = 'BILLING',
+  BILLS = 'BILLS',
   CATEGORIES = 'CATEGORIES',
   INVENTORY = 'INVENTORY',
   CUSTOMERS = 'CUSTOMERS',
@@ -72,7 +73,7 @@ export interface CartItem extends Product {
   cartLineId: string;
 }
 
-export type PaymentMethod = 'CASH' | 'UPI' | 'OTHER';
+export type PaymentMethod = 'CASH' | 'UPI' | 'SPLIT' | 'OTHER';
 
 export interface SaleRecord {
   id: string;
@@ -84,11 +85,19 @@ export interface SaleRecord {
   total: number;
   paidAmount?: number;
   paymentMethod?: PaymentMethod;
+  cashPaid?: number;
+  upiPaid?: number;
   customerId?: string;
+  customerName?: string;
+  billLabel?: string;
   pointsEarned?: number;
   pointsRedeemed?: number;
   discountAmount?: number;
 }
+
+export type NewSalePayload = Omit<SaleRecord, 'id' | 'timestamp'>;
+
+export type PrintMode = 'all' | 'selected' | 'skip';
 
 export interface DailyStat {
   date: string;

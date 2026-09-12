@@ -1,24 +1,26 @@
-import { FC, useState, useMemo, useEffect, useRef } from 'react';
-import { Product, CartItem, Customer } from '../types';
-import { Search, Plus, Minus, CreditCard, CheckCircle, ShoppingBag, User, X, Award, Smartphone, Banknote } from 'lucide-react';
+import { FC, useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { Product, CartItem, Customer, NewSalePayload, SaleRecord, PrintMode, PaymentMethod } from '../types';
+import { Search, Plus, Minus, CheckCircle, ShoppingBag, User, X, Award, Smartphone, Banknote, Printer, HelpCircle, PauseCircle, MessageCircle, RotateCcw, Split } from 'lucide-react';
+import BillingHelpSheet from './BillingHelpSheet';
+import ReceiptPrintBlock from './ReceiptPrintBlock';
 import { SHOP_QR_CODE_URL, getPriceForWeight, getCostForWeight, getCartLineId, getWeightPriceBreakdown, formatInventoryUnitPrice, isPieceUnit, PIECE_UNIT, getPieceBillingOptions, getPieceCartLineId } from '../constants';
+import { formatReceiptId, shareReceiptOnWhatsApp } from '../utils/receiptFormat';
+import { loadHeldBills, addHeldBill, removeHeldBill, HeldBillSession } from '../utils/heldBills';
 
 interface BillingProps {
   products: Product[];
   customers: Customer[];
   categories: import('../types').Category[];
-  onCompleteSale: (
-    items: CartItem[],
-    total: number,
-    subtotal: number,
-    taxAmount: number,
-    roundingAdjustment: number,
-    paidAmount: number,
-    paymentMethod: 'CASH' | 'UPI' | 'OTHER',
-    customerId?: string,
-    pointsRedeemed?: number,
-    discountAmount?: number
-  ) => Promise<void>;
+  salesTodayTotal: number;
+  onCompleteSales: (sales: NewSalePayload[]) => Promise<SaleRecord[]>;
+}
+
+interface CompletedBill {
+  groupId: string;
+  sale: SaleRecord;
+  cashReceived?: number;
+  changeDue?: number;
 }
 
 interface BillGroup {
@@ -29,9 +31,7 @@ interface BillGroup {
   redeemPoints: boolean;
 }
 
-type PaymentMethod = 'CASH' | 'UPI' | 'OTHER' | null;
-
-const Billing: FC<BillingProps> = ({ products, customers, categories, onCompleteSale }) => {
+const Billing: FC<BillingProps> = ({ products, customers, categories, salesTodayTotal, onCompleteSales }) => {
   const [groups, setGroups] = useState<BillGroup[]>([]);
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -39,11 +39,20 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
   const [categoryScrollIndex, setCategoryScrollIndex] = useState(0);
   const [customerSearch, setCustomerSearch] = useState('');
   const [checkoutStep, setCheckoutStep] = useState<'cart' | 'payment' | 'success'>('cart');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>('CASH');
+  const [splitCashAmount, setSplitCashAmount] = useState('');
+  const [splitUpiAmount, setSplitUpiAmount] = useState('');
+  const [heldBills, setHeldBills] = useState<HeldBillSession[]>(() => loadHeldBills());
+  const [showHeldPanel, setShowHeldPanel] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [saleError, setSaleError] = useState('');
-  const [printMode, setPrintMode] = useState<'all' | 'selected'>('all');
+  const [printMode, setPrintMode] = useState<PrintMode>('all');
   const [selectedPrintGroupIds, setSelectedPrintGroupIds] = useState<string[]>([]);
+  const [completedBills, setCompletedBills] = useState<CompletedBill[]>([]);
+  const [activePrintSaleIds, setActivePrintSaleIds] = useState<string[]>([]);
+  const [cashReceived, setCashReceived] = useState('');
+  const [pendingPrint, setPendingPrint] = useState(false);
+  const [showHelpGuide, setShowHelpGuide] = useState(false);
   const [weightPickerProduct, setWeightPickerProduct] = useState<Product | null>(null);
   const [piecePickerProduct, setPiecePickerProduct] = useState<Product | null>(null);
   const [selectedWeightUnits, setSelectedWeightUnits] = useState<string[]>([]);
@@ -85,30 +94,59 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     return groups.find((group) => group.id === activeGroupId) ?? groups[0] ?? null;
   }, [groups, activeGroupId]);
 
-  const printGroups = useMemo(() => {
-    return printMode === 'all' ? groups : groups.filter((g) => selectedPrintGroupIds.includes(g.id));
-  }, [groups, printMode, selectedPrintGroupIds]);
+  const billableGroups = useMemo(
+    () => groups.filter((group) => group.items.length > 0),
+    [groups]
+  );
 
   useEffect(() => {
     setSelectedPrintGroupIds((prev) => prev.filter((id) => groups.some((group) => group.id === id)));
   }, [groups]);
+
+  const resolvePrintSaleIds = (mode: PrintMode = printMode, bills: CompletedBill[] = completedBills) => {
+    if (mode === 'skip' || bills.length === 0) return [];
+    if (mode === 'all') return bills.map((bill) => bill.sale.id);
+    return bills
+      .filter((bill) => selectedPrintGroupIds.includes(bill.groupId))
+      .map((bill) => bill.sale.id);
+  };
+
+  const runBrowserPrint = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.print();
+      });
+    });
+  }, []);
+
+  const triggerPrint = (saleIds: string[]) => {
+    if (saleIds.length === 0) return;
+    setActivePrintSaleIds(saleIds);
+    setPendingPrint(true);
+  };
+
+  useEffect(() => {
+    if (!pendingPrint || activePrintSaleIds.length === 0) return;
+    const timer = window.setTimeout(() => {
+      runBrowserPrint();
+      setPendingPrint(false);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [pendingPrint, activePrintSaleIds, runBrowserPrint]);
 
   useEffect(() => {
     if (checkoutStep !== 'success') {
       hasAutoPrintedRef.current = false;
       return;
     }
+    if (hasAutoPrintedRef.current || completedBills.length === 0 || printMode === 'skip') return;
 
-    if (hasAutoPrintedRef.current) return;
-    if (printMode === 'selected' && selectedPrintGroupIds.length === 0) return;
+    const saleIds = resolvePrintSaleIds(printMode, completedBills);
+    if (saleIds.length === 0) return;
 
-    const timer = window.setTimeout(() => {
-      hasAutoPrintedRef.current = true;
-      window.print();
-    }, 400);
-
-    return () => window.clearTimeout(timer);
-  }, [checkoutStep, printMode, selectedPrintGroupIds.length]);
+    hasAutoPrintedRef.current = true;
+    triggerPrint(saleIds);
+  }, [checkoutStep, completedBills, printMode, selectedPrintGroupIds]);
 
   const clearCustomerFromGroup = (groupId: string) => {
     setGroups((prev) => prev.map((group) => {
@@ -366,22 +404,139 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
 
   const handleProceedToPayment = () => {
     if (!hasInvoiceItems) return;
+    setSplitCashAmount('');
+    setSplitUpiAmount('');
     setCheckoutStep('payment');
+  };
+
+  const refreshHeldBills = () => setHeldBills(loadHeldBills());
+
+  const handleHoldBill = () => {
+    if (!hasInvoiceItems) return;
+    const defaultLabel = activeGroup?.customer?.name ?? activeGroup?.name ?? `Held ${heldBills.length + 1}`;
+    const label = window.prompt('Label for held bill (optional):', defaultLabel);
+    if (label === null) return;
+
+    const session: HeldBillSession = {
+      id: `held-${Date.now()}`,
+      label: label.trim() || defaultLabel,
+      savedAt: new Date().toISOString(),
+      groups: groups.map((group) => ({
+        ...group,
+        items: group.items.map((item) => ({ ...item })),
+      })),
+      activeGroupId,
+    };
+    addHeldBill(session);
+    refreshHeldBills();
+    setGroups([]);
+    setActiveGroupId(null);
+    setCustomerSearch('');
+  };
+
+  const handleResumeHeldBill = (session: HeldBillSession) => {
+    if (hasInvoiceItems) {
+      const ok = window.confirm('Current cart has items. Replace with held bill?');
+      if (!ok) return;
+    }
+    setGroups(session.groups.map((group) => ({
+      ...group,
+      items: group.items.map((item) => ({ ...item })),
+    })));
+    setActiveGroupId(session.activeGroupId);
+    removeHeldBill(session.id);
+    refreshHeldBills();
+    setShowHeldPanel(false);
+    setCheckoutStep('cart');
+  };
+
+  const handleDeleteHeldBill = (id: string) => {
+    removeHeldBill(id);
+    refreshHeldBills();
+  };
+
+  const buildSaleEntries = () => {
+    const splitCashTotal = paymentMethod === 'SPLIT' ? parseFloat(splitCashAmount) || 0 : 0;
+    const splitUpiTotal = paymentMethod === 'SPLIT' ? parseFloat(splitUpiAmount) || 0 : 0;
+
+    const entries = billableGroups.map((group) => {
+      const subtotal = getGroupSubtotal(group);
+      const discount = getGroupDiscount(group);
+      const beforeRound = subtotal - discount;
+      const rounding = parseFloat((Math.round(beforeRound) - beforeRound).toFixed(2));
+      const total = parseFloat((beforeRound + rounding).toFixed(2));
+      return {
+        groupId: group.id,
+        payload: {
+          items: group.items,
+          subtotal,
+          total,
+          taxAmount: 0,
+          roundingAdjustment: rounding,
+          paidAmount: total,
+          paymentMethod: (paymentMethod || 'CASH') as PaymentMethod,
+          customerId: group.customer?.id,
+          customerName: group.customer?.name,
+          billLabel: group.customer?.name ?? group.name,
+          pointsRedeemed: discount > 0 ? 50 : 0,
+          pointsEarned: Math.floor(total),
+          discountAmount: discount,
+        } satisfies NewSalePayload,
+      };
+    });
+
+    if (paymentMethod !== 'SPLIT' || finalTotal <= 0) return entries;
+
+    let assignedCash = 0;
+    let assignedUpi = 0;
+    return entries.map((entry, index) => {
+      let cashPaid: number;
+      let upiPaid: number;
+      if (index === entries.length - 1) {
+        cashPaid = parseFloat((splitCashTotal - assignedCash).toFixed(2));
+        upiPaid = parseFloat((splitUpiTotal - assignedUpi).toFixed(2));
+      } else {
+        const ratio = entry.payload.total / finalTotal;
+        cashPaid = parseFloat((splitCashTotal * ratio).toFixed(2));
+        upiPaid = parseFloat((splitUpiTotal * ratio).toFixed(2));
+        assignedCash += cashPaid;
+        assignedUpi += upiPaid;
+      }
+      return {
+        ...entry,
+        payload: {
+          ...entry.payload,
+          paymentMethod: 'SPLIT',
+          cashPaid,
+          upiPaid,
+        },
+      };
+    });
   };
 
   const handleConfirmPayment = async () => {
     setIsProcessing(true);
     setSaleError('');
     try {
-      await onCompleteSale(
-        combinedItems,
-        finalTotal,
-        totalSubtotal,
-        0,
-        roundingAdjustment,
-        paidAmount,
-        paymentMethod || 'CASH'
-      );
+      const entries = buildSaleEntries();
+      if (entries.length === 0) {
+        throw new Error('No billable items found.');
+      }
+      const createdSales = await onCompleteSales(entries.map((entry) => entry.payload));
+      const cashAmount = paymentMethod === 'CASH' && cashReceived.trim()
+        ? parseFloat(cashReceived)
+        : undefined;
+      const bills: CompletedBill[] = entries.map((entry, index) => ({
+        groupId: entry.groupId,
+        sale: createdSales[index],
+        cashReceived: entries.length === 1 && cashAmount !== undefined && !Number.isNaN(cashAmount)
+          ? cashAmount
+          : undefined,
+        changeDue: entries.length === 1 && cashAmount !== undefined && !Number.isNaN(cashAmount)
+          ? parseFloat(Math.max(0, cashAmount - createdSales[index].total).toFixed(2))
+          : undefined,
+      }));
+      setCompletedBills(bills);
       setCheckoutStep('success');
     } catch (err: any) {
       const msg = err?.message || String(err) || 'Unknown error';
@@ -401,15 +556,22 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     setCustomerSearch('');
     setCheckoutStep('cart');
     setPaymentMethod('CASH');
+    setSplitCashAmount('');
+    setSplitUpiAmount('');
     setSaleError('');
     setPrintMode('all');
     setSelectedPrintGroupIds([]);
+    setCompletedBills([]);
+    setActivePrintSaleIds([]);
+    setCashReceived('');
+    setPendingPrint(false);
+    setShowHeldPanel(false);
     hasAutoPrintedRef.current = false;
   };
 
-  const printReceipt = () => {
-    // ensure thermal print area reflects current selection
-    window.print();
+  const printReceipt = (saleIds?: string[]) => {
+    const ids = saleIds ?? resolvePrintSaleIds();
+    triggerPrint(ids);
   };
 
   const togglePrintGroupSelection = (groupId: string) => {
@@ -419,12 +581,12 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     });
   };
 
-  const handlePrintModeChange = (mode: 'all' | 'selected') => {
+  const handlePrintModeChange = (mode: PrintMode) => {
     setPrintMode(mode);
     if (mode === 'selected') {
       setSelectedPrintGroupIds((prev) => {
-        if (prev.length > 0) return prev.filter((id) => groups.some((group) => group.id === id));
-        return groups.map((group) => group.id);
+        if (prev.length > 0) return prev.filter((id) => billableGroups.some((group) => group.id === id));
+        return billableGroups.map((group) => group.id);
       });
       return;
     }
@@ -459,109 +621,158 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
     };
   }, [piecePickerProduct, selectedPieceCounts]);
 
-  const receiptNumber = `INV-${Date.now().toString().slice(-6)}`;
-  const receiptTimestamp = new Date().toLocaleString('en-IN', {
-    dateStyle: 'medium',
-    timeStyle: 'short'
-  });
+  const cashReceivedAmount = cashReceived.trim() ? parseFloat(cashReceived) : NaN;
+  const checkoutChangeDue = paymentMethod === 'CASH' && !Number.isNaN(cashReceivedAmount) && cashReceivedAmount >= finalTotal
+    ? parseFloat((cashReceivedAmount - finalTotal).toFixed(2))
+    : null;
+
+  const splitCashParsed = splitCashAmount.trim() ? parseFloat(splitCashAmount) : NaN;
+  const splitUpiParsed = splitUpiAmount.trim() ? parseFloat(splitUpiAmount) : NaN;
+  const splitIsValid = paymentMethod !== 'SPLIT' || (
+    !Number.isNaN(splitCashParsed) &&
+    !Number.isNaN(splitUpiParsed) &&
+    splitCashParsed >= 0 &&
+    splitUpiParsed >= 0 &&
+    Math.abs(splitCashParsed + splitUpiParsed - finalTotal) < 0.01
+  );
+
+  const handleShareWhatsApp = (bill: CompletedBill) => {
+    const label = bill.sale.billLabel || bill.sale.customerName || 'Walk-in Customer';
+    const phone = bill.sale.customerId
+      ? customers.find((customer) => customer.id === bill.sale.customerId)?.phone
+      : undefined;
+    shareReceiptOnWhatsApp(bill.sale, {
+      phone,
+      customerLabel: label,
+      cashReceived: bill.cashReceived,
+      changeDue: bill.changeDue,
+    });
+  };
 
   if (checkoutStep === 'success') {
+    const printedCount = printMode === 'skip' ? 0 : resolvePrintSaleIds().length;
+
     return (
-      <div className="h-full flex flex-col items-center justify-center animate-fade-in text-center p-8">
-        <div className="bg-[var(--brand-accent)]/20 p-6 rounded-full text-[var(--brand-dark)] mb-6 animate-scale-up">
-          <CheckCircle size={64} />
-        </div>
-        <h2 className="text-2xl font-bold text-[var(--brand-dark)] mb-2">Payment Successful!</h2>
-        <p className="text-[var(--brand-border)] mb-4">Transaction recorded securely. Your receipt is printing automatically.</p>
-
-        <div className="mb-4 w-full max-w-md">
-            
-            <div className="mb-3 flex items-center gap-3">
-              <button
-                type="button"
-                className={`px-3 py-2 rounded-xl border cursor-pointer ${printMode === 'all' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}
-                onClick={() => handlePrintModeChange('all')}
-              >
-                Print All
-              </button>
-              <button
-                type="button"
-                className={`px-3 py-2 rounded-xl border cursor-pointer ${printMode === 'selected' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}
-                onClick={() => handlePrintModeChange('selected')}
-              >
-                Print Selected
-              </button>
-            </div>
-            {printMode === 'selected' && (
-              <div className="space-y-2 mb-3 rounded-lg border p-3 bg-white text-sm">
-                {groups.map((group) => (
-                  <label key={group.id} className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <input type="checkbox" checked={selectedPrintGroupIds.includes(group.id)} onChange={() => togglePrintGroupSelection(group.id)} />
-                      <span className="text-sm">{group.customer?.name ?? group.name}</span>
-                    </div>
-                    <span className="text-xs text-[var(--brand-border)]">₹{getGroupTotal(group).toFixed(2)}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            <div className="thermal-receipt-print" aria-hidden="true">
-              <div className="thermal-receipt-print__header">
-                <div className="font-bold text-[12px] uppercase tracking-wide">Suvai Bakery</div>
-                <div className="text-[10px]">Bakery Billing Receipt</div>
-                <div className="text-[10px]">Receipt #: {receiptNumber}</div>
-                <div className="text-[10px]">{receiptTimestamp}</div>
-              </div>
-              <div className="thermal-receipt-print__divider" />
-              {printGroups.map((group) => (
-                <div key={group.id} className="space-y-1 text-[10px] thermal-receipt-print__group">
-                  <div className="font-bold">{group.customer?.name ?? group.name}</div>
-                  {group.items.map((item) => (
-                    <div key={item.cartLineId} className="flex justify-between gap-2">
-                      <span className="flex-1">{item.name} ({item.unit}) x {item.quantity}</span>
-                      <span>₹{(item.price * item.quantity).toFixed(2)}</span>
-                    </div>
-                  ))}
-                  <div className="flex justify-between text-[10px] pt-1">
-                    <span>Subtotal</span>
-                    <span>₹{getGroupSubtotal(group).toFixed(2)}</span>
-                  </div>
-                  {getGroupDiscount(group) > 0 && (
-                    <div className="flex justify-between text-[10px]">
-                      <span>Discount</span>
-                      <span>-₹{getGroupDiscount(group).toFixed(2)}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between text-[10px] font-semibold pt-1 border-t border-dashed border-slate-200">
-                    <span>Total</span>
-                    <span>₹{getGroupTotal(group).toFixed(2)}</span>
-                  </div>
-                </div>
-              ))}
-              <div className="thermal-receipt-print__divider" />
-              <div className="text-[10px] text-center">
-                <div>Payment: {paymentMethod === 'UPI' ? 'UPI / GPay' : 'Cash'}</div>
-                <div>Thank you for shopping!</div>
-              </div>
-            </div>
+      <div className="h-full flex flex-col items-center justify-center animate-fade-in p-4 sm:p-6 md:p-8 overflow-y-auto">
+        <div className="text-center mb-5">
+          <div className="bg-[var(--brand-accent)]/20 p-6 rounded-full text-[var(--brand-dark)] mb-4 animate-scale-up inline-flex">
+            <CheckCircle size={56} />
           </div>
-        <div className="mt-4 flex flex-col gap-3">
-          <button
-            onClick={printReceipt}
-            disabled={printMode === 'selected' && selectedPrintGroupIds.length === 0}
-            className={`btn btn-primary transition-all ${printMode === 'selected' && selectedPrintGroupIds.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
-          >
-            {printMode === 'selected' ? `Reprint Selected (${selectedPrintGroupIds.length})` : 'Reprint Receipt'}
-          </button>
+          <h2 className="text-2xl font-bold text-[var(--brand-dark)] mb-2">Payment Successful!</h2>
+          <p className="text-[var(--brand-border)] text-sm">
+            {printMode === 'skip'
+              ? 'Transaction recorded. No receipt was printed automatically.'
+              : `${printedCount} receipt${printedCount === 1 ? '' : 's'} sent to printer.`}
+          </p>
+          {completedBills.length > 1 && paymentMethod === 'CASH' && checkoutChangeDue !== null && (
+            <p className="text-sm font-semibold text-[var(--brand-dark)] mt-2">
+              Total received ₹{cashReceivedAmount.toFixed(2)} • Change ₹{checkoutChangeDue.toFixed(2)}
+            </p>
+          )}
+        </div>
+
+        <div className="w-full max-w-lg space-y-3 mb-5">
+          {completedBills.map((bill) => {
+            const label = bill.sale.billLabel || bill.sale.customerName || 'Walk-in Customer';
+            const wasPrinted = printMode !== 'skip' && resolvePrintSaleIds().includes(bill.sale.id);
+            return (
+              <div key={bill.sale.id} className="rounded-xl border border-[var(--brand-border)] bg-white p-4 flex items-center justify-between gap-3">
+                <div className="min-w-0 text-left">
+                  <p className="font-semibold text-[var(--brand-dark)] truncate">{label}</p>
+                  <p className="text-xs text-[var(--brand-border)] mt-0.5">
+                    {formatReceiptId(bill.sale.id)} • ₹{bill.sale.total.toFixed(2)}
+                    {wasPrinted ? ' • Printed' : printMode === 'skip' ? ' • Not printed' : ''}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleShareWhatsApp(bill)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
+                  >
+                    <MessageCircle size={14} />
+                    WhatsApp
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => printReceipt([bill.sale.id])}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
+                  >
+                    <Printer size={14} />
+                    Reprint
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="w-full max-w-lg mb-4 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-surface)] p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--brand-border)] mb-3">Print again</p>
+          <div className="flex flex-wrap gap-2 mb-3">
+            <button
+              type="button"
+              className={`px-3 py-2 rounded-xl border text-sm ${printMode === 'all' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}
+              onClick={() => handlePrintModeChange('all')}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className={`px-3 py-2 rounded-xl border text-sm ${printMode === 'selected' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}
+              onClick={() => handlePrintModeChange('selected')}
+            >
+              Selected
+            </button>
+          </div>
+          {printMode === 'selected' && (
+            <div className="space-y-2 mb-3 text-sm">
+              {completedBills.map((bill) => (
+                <label key={bill.groupId} className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={selectedPrintGroupIds.includes(bill.groupId)}
+                      onChange={() => togglePrintGroupSelection(bill.groupId)}
+                    />
+                    <span className="truncate">{bill.sale.billLabel || bill.sale.customerName}</span>
+                  </div>
+                  <span className="text-xs text-[var(--brand-border)] shrink-0">₹{bill.sale.total.toFixed(2)}</span>
+                </label>
+              ))}
+            </div>
+          )}
           <button
             type="button"
-            onClick={handleStartNewBill}
-            className="btn btn-secondary"
+            onClick={() => printReceipt()}
+            disabled={printMode === 'selected' && resolvePrintSaleIds().length === 0}
+            className="btn btn-primary disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Start New Bill
+            {printMode === 'selected'
+              ? `Reprint Selected (${resolvePrintSaleIds().length})`
+              : `Reprint All (${completedBills.length})`}
           </button>
         </div>
+
+        <button type="button" onClick={handleStartNewBill} className="btn btn-secondary max-w-lg">
+          Start New Bill
+        </button>
+
+        {createPortal(
+          <div className="receipt-print-root" aria-hidden="true">
+            {completedBills.map((bill) => (
+              <ReceiptPrintBlock
+                key={bill.sale.id}
+                sale={bill.sale}
+                customerLabel={bill.sale.billLabel || bill.sale.customerName}
+                active={activePrintSaleIds.includes(bill.sale.id)}
+                cashReceived={bill.cashReceived}
+                changeDue={bill.changeDue}
+              />
+            ))}
+          </div>,
+          document.body
+        )}
       </div>
     );
   }
@@ -569,8 +780,8 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
   // Payment Selection Screen
   if (checkoutStep === 'payment') {
       return (
-          <div className="h-full flex flex-col items-center justify-center animate-fade-in p-4">
-              <div className="bg-[var(--brand-surface)] p-8 rounded-2xl shadow-xl border border-[var(--brand-border)] max-w-md w-full">
+          <div className="h-full flex flex-col items-center justify-center animate-fade-in p-3 sm:p-4">
+              <div className="bg-[var(--brand-surface)] p-5 sm:p-8 rounded-2xl shadow-xl border border-[var(--brand-border)] max-w-md w-full max-h-[92dvh] overflow-y-auto">
                   <div className="flex justify-between items-center mb-6">
                       <h2 className="text-xl font-bold text-[var(--brand-dark)]">Select Payment Method</h2>
                       <button onClick={() => setCheckoutStep('cart')} className="text-[var(--brand-border)] hover:text-[var(--brand-dark)]">
@@ -604,29 +815,83 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4 mb-8">
+                  <div className="grid grid-cols-3 gap-3 mb-8">
                       <button 
-                          onClick={() => setPaymentMethod('CASH')}
-                          className={`p-4 rounded-xl border-2 flex flex-col items-center justify-center gap-2 transition-all ${
+                          onClick={() => { setPaymentMethod('CASH'); setSplitCashAmount(''); setSplitUpiAmount(''); }}
+                          className={`p-3 rounded-xl border-2 flex flex-col items-center justify-center gap-2 transition-all ${
                               paymentMethod === 'CASH' ? 'border-[var(--brand-accent)] bg-[var(--brand-accent)]/20 text-[var(--brand-dark)]' : 'border-[var(--brand-border)] bg-[var(--brand-surface)] text-[var(--brand-border)] hover:border-[var(--brand-dark)]'
                           }`}
                       >
-                          <Banknote size={32} />
-                          <span className="font-semibold">Cash</span>
+                          <Banknote size={28} />
+                          <span className="font-semibold text-sm">Cash</span>
                       </button>
                       <button 
-                          onClick={() => setPaymentMethod('UPI')}
-                          className={`p-4 rounded-xl border-2 flex flex-col items-center justify-center gap-2 transition-all ${
+                          onClick={() => { setPaymentMethod('UPI'); setSplitCashAmount(''); setSplitUpiAmount(''); }}
+                          className={`p-3 rounded-xl border-2 flex flex-col items-center justify-center gap-2 transition-all ${
                               paymentMethod === 'UPI' ? 'border-[var(--brand-accent)] bg-[var(--brand-accent)]/20 text-[var(--brand-dark)]' : 'border-[var(--brand-border)] bg-[var(--brand-surface)] text-[var(--brand-border)] hover:border-[var(--brand-dark)]'
                           }`}
                       >
-                          <Smartphone size={32} />
-                          <span className="font-semibold">UPI / GPay</span>
+                          <Smartphone size={28} />
+                          <span className="font-semibold text-sm">UPI</span>
+                      </button>
+                      <button 
+                          onClick={() => { setPaymentMethod('SPLIT'); setSplitCashAmount(''); setSplitUpiAmount(''); }}
+                          className={`p-3 rounded-xl border-2 flex flex-col items-center justify-center gap-2 transition-all ${
+                              paymentMethod === 'SPLIT' ? 'border-[var(--brand-accent)] bg-[var(--brand-accent)]/20 text-[var(--brand-dark)]' : 'border-[var(--brand-border)] bg-[var(--brand-surface)] text-[var(--brand-border)] hover:border-[var(--brand-dark)]'
+                          }`}
+                      >
+                          <Split size={28} />
+                          <span className="font-semibold text-sm">Split</span>
                       </button>
                   </div>
 
+                  {paymentMethod === 'CASH' && (
+                      <div className="mb-6 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-muted)] p-4 space-y-3">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="text-[var(--brand-border)]">Amount due</span>
+                            <span className="font-bold text-[var(--brand-dark)]">₹{finalTotal.toFixed(2)}</span>
+                          </div>
+                          <div>
+                            <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Cash received (₹)</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              inputMode="decimal"
+                              placeholder="Enter amount customer gave"
+                              value={cashReceived}
+                              onChange={(e) => setCashReceived(e.target.value)}
+                              className="w-full px-3 py-2.5 rounded-lg border border-[var(--brand-border)] bg-white text-[var(--brand-text-dark)]"
+                            />
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {[...new Set([finalTotal, 100, 200, 500, 1000].map((amount) => Number(amount.toFixed(2))))]
+                              .sort((a, b) => a - b)
+                              .map((amount) => (
+                              <button
+                                key={amount}
+                                type="button"
+                                onClick={() => setCashReceived(amount.toFixed(2))}
+                                className="px-3 py-1.5 rounded-lg border border-[var(--brand-border)] bg-white text-xs font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-surface)]"
+                              >
+                                {Math.abs(amount - finalTotal) < 0.01 ? 'Exact' : `₹${amount}`}
+                              </button>
+                            ))}
+                          </div>
+                          {checkoutChangeDue !== null && (
+                            <div className="rounded-lg bg-[var(--brand-accent)]/25 border border-[var(--brand-border)] px-3 py-2 flex items-center justify-between">
+                              <span className="text-sm font-medium text-[var(--brand-dark)]">Change to return</span>
+                              <span className="text-lg font-bold text-[var(--brand-dark)]">₹{checkoutChangeDue.toFixed(2)}</span>
+                            </div>
+                          )}
+                          {cashReceived.trim() && checkoutChangeDue === null && (
+                            <p className="text-xs text-red-600">Received amount is less than total due.</p>
+                          )}
+                      </div>
+                  )}
+
                   {paymentMethod === 'UPI' && (
-                      <div className="mb-8 text-center bg-[var(--brand-muted)] p-6 rounded-xl border border-[var(--brand-border)] animate-fade-in">
+                      <div className="mb-6 text-center bg-[var(--brand-muted)] p-6 rounded-xl border border-[var(--brand-border)] animate-fade-in">
                           <p className="text-sm text-[var(--brand-border)] mb-4">Scan QR to Pay</p>
                           <div className="w-40 h-40 bg-[var(--brand-surface)] p-2 rounded-lg shadow-sm mx-auto mb-4 border border-[var(--brand-border)]">
                               <img src={SHOP_QR_CODE_URL} alt="Shop UPI QR" className="w-full h-full object-contain" />
@@ -634,9 +899,134 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                       </div>
                   )}
 
+                  {paymentMethod === 'SPLIT' && (
+                      <div className="mb-6 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-muted)] p-4 space-y-3 animate-fade-in">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="text-[var(--brand-border)]">Total due</span>
+                            <span className="font-bold text-[var(--brand-dark)]">₹{finalTotal.toFixed(2)}</span>
+                          </div>
+                          <div>
+                            <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Cash portion (₹)</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              inputMode="decimal"
+                              placeholder="Cash amount"
+                              value={splitCashAmount}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setSplitCashAmount(value);
+                                const cash = parseFloat(value);
+                                if (!Number.isNaN(cash)) {
+                                  setSplitUpiAmount(parseFloat(Math.max(0, finalTotal - cash).toFixed(2)).toString());
+                                } else {
+                                  setSplitUpiAmount('');
+                                }
+                              }}
+                              className="w-full px-3 py-2.5 rounded-lg border border-[var(--brand-border)] bg-white text-[var(--brand-text-dark)]"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">UPI portion (₹)</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              inputMode="decimal"
+                              placeholder="UPI amount"
+                              value={splitUpiAmount}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setSplitUpiAmount(value);
+                                const upi = parseFloat(value);
+                                if (!Number.isNaN(upi)) {
+                                  setSplitCashAmount(parseFloat(Math.max(0, finalTotal - upi).toFixed(2)).toString());
+                                } else {
+                                  setSplitCashAmount('');
+                                }
+                              }}
+                              className="w-full px-3 py-2.5 rounded-lg border border-[var(--brand-border)] bg-white text-[var(--brand-text-dark)]"
+                            />
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {[0.5, 0.25, 0.75].map((ratio) => {
+                              const cash = parseFloat((finalTotal * ratio).toFixed(2));
+                              const upi = parseFloat((finalTotal - cash).toFixed(2));
+                              const label = ratio === 0.5 ? '50/50' : ratio === 0.25 ? '25% cash' : '75% cash';
+                              return (
+                                <button
+                                  key={ratio}
+                                  type="button"
+                                  onClick={() => {
+                                    setSplitCashAmount(cash.toFixed(2));
+                                    setSplitUpiAmount(upi.toFixed(2));
+                                  }}
+                                  className="px-3 py-1.5 rounded-lg border border-[var(--brand-border)] bg-white text-xs font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-surface)]"
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {splitCashAmount.trim() && splitUpiAmount.trim() && !splitIsValid && (
+                            <p className="text-xs text-red-600">Cash + UPI must equal ₹{finalTotal.toFixed(2)}.</p>
+                          )}
+                          {splitIsValid && (
+                            <div className="rounded-lg bg-[var(--brand-accent)]/25 border border-[var(--brand-border)] px-3 py-2 text-sm text-[var(--brand-dark)]">
+                              Cash ₹{splitCashParsed.toFixed(2)} + UPI ₹{splitUpiParsed.toFixed(2)}
+                            </div>
+                          )}
+                      </div>
+                  )}
+
+                  <div className="mb-6 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-muted)] p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[var(--brand-border)] mb-3">After payment, print</p>
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-xl border text-sm ${printMode === 'all' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}
+                        onClick={() => handlePrintModeChange('all')}
+                      >
+                        All receipts
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-xl border text-sm ${printMode === 'selected' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}
+                        onClick={() => handlePrintModeChange('selected')}
+                      >
+                        Selected only
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-xl border text-sm ${printMode === 'skip' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'bg-white text-[var(--brand-border)]'}`}
+                        onClick={() => handlePrintModeChange('skip')}
+                      >
+                        Skip print
+                      </button>
+                    </div>
+                    {printMode === 'selected' && (
+                      <div className="space-y-2 text-sm">
+                        {billableGroups.map((group) => (
+                          <label key={group.id} className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={selectedPrintGroupIds.includes(group.id)}
+                                onChange={() => togglePrintGroupSelection(group.id)}
+                              />
+                              <span className="truncate">{group.customer?.name ?? group.name}</span>
+                            </div>
+                            <span className="text-xs text-[var(--brand-border)] shrink-0">₹{getGroupTotal(group).toFixed(2)}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   <button 
                       onClick={handleConfirmPayment}
-                      disabled={!paymentMethod || isProcessing}
+                      disabled={!paymentMethod || isProcessing || (paymentMethod === 'SPLIT' && !splitIsValid)}
                       className="w-full bg-[var(--brand-dark)] text-[var(--brand-text-light)] py-4 rounded-xl font-bold text-lg hover:bg-[var(--brand-bg)] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-[var(--brand-border)] flex items-center justify-center gap-3"
                   >
                       {isProcessing ? (
@@ -648,7 +1038,11 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                           Processing...
                         </>
                       ) : (
-                        paymentMethod === 'UPI' ? 'Confirm Payment Received' : 'Complete Cash Sale'
+                        paymentMethod === 'UPI'
+                          ? 'Confirm Payment Received'
+                          : paymentMethod === 'SPLIT'
+                            ? 'Complete Split Payment'
+                            : 'Complete Cash Sale'
                       )}
                   </button>
                   {saleError && (
@@ -662,24 +1056,57 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
   }
 
   return (
-    <div className="flex flex-col md:flex-row h-[calc(100vh-8rem)] gap-6 md:gap-8 pb-20 md:pb-0">
-      {/* Product Grid */}
-      <div className="flex-1 flex flex-col min-h-0">
-        <div className="mb-4 md:mb-6 space-y-4">
-          <div className="relative shrink-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--brand-border)]" size={20} />
-            <input 
-              type="text" 
-              placeholder="Search products..." 
-              className="w-full pl-10 pr-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] transition-all text-[var(--brand-text-dark)] bg-white"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          {/* ── Premium Category Strip ── */}
-          <div className="category-strip-wrapper">
-            <div className="category-strip">
-              {/* All pill */}
+    <div className="billing-page">
+      <div className="billing-topbar">
+        <div className="billing-stat">
+          <span className="billing-stat__label">Today</span>
+          <span>₹{salesTodayTotal.toFixed(2)}</span>
+        </div>
+        <div className="billing-stat">
+          <span className="billing-stat__label">Queue</span>
+          <span>{groups.length}</span>
+        </div>
+        <div className="billing-stat">
+          <span className="billing-stat__label">Active</span>
+          <span>₹{(activeGroup ? getGroupTotal(activeGroup) : 0).toFixed(2)}</span>
+        </div>
+        <div className="billing-search">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--brand-border)] pointer-events-none" size={14} />
+          <input
+            type="text"
+            placeholder="Search products..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowHeldPanel(true)}
+          className="billing-stat hover:bg-[var(--brand-muted)] transition-colors"
+          title="Held bills"
+          aria-label="View held bills"
+        >
+          <PauseCircle size={14} className="text-[var(--brand-dark)]" />
+          <span>Held{heldBills.length > 0 ? ` (${heldBills.length})` : ''}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowHelpGuide(true)}
+          className="billing-stat hover:bg-[var(--brand-muted)] transition-colors"
+          title="Billing quick guide"
+          aria-label="Open billing quick guide"
+        >
+          <HelpCircle size={14} className="text-[var(--brand-dark)]" />
+          <span>Guide</span>
+        </button>
+      </div>
+
+      <BillingHelpSheet open={showHelpGuide} onClose={() => setShowHelpGuide(false)} />
+
+      <div className="billing-body">
+        <section className="billing-products">
+          <div className="billing-products__categories category-strip-wrapper">
+            <div className="category-strip category-strip--compact">
               <button
                 type="button"
                 id="cat-filter-all"
@@ -710,7 +1137,7 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
                   <div className="category-chip__img-wrap">
                     {cat.imageUrl
                       ? <img src={cat.imageUrl} alt={cat.name} className="w-full h-full object-cover" />
-                      : <div className="w-full h-full flex items-center justify-center text-[var(--brand-dark)] text-xl font-bold">{cat.name[0]}</div>
+                      : <div className="w-full h-full flex items-center justify-center text-[var(--brand-dark)] text-lg font-bold">{cat.name[0]}</div>
                     }
                   </div>
                   <span className="category-chip__label">{cat.name}</span>
@@ -719,214 +1146,234 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
               ))}
             </div>
           </div>
-        </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4 overflow-y-auto pr-1 pb-2">
-          {filteredProducts.map(product => (
-            <button
-              key={product.id}
-              onClick={() => handleProductSelect(product)}
-              disabled={product.stock <= 0}
-              className={`p-3 md:p-4 rounded-xl border text-left transition-all relative group ${
-                product.stock <= 0 
-                  ? 'bg-[var(--brand-muted)] border-[var(--brand-border)] opacity-60 cursor-not-allowed' 
-                  : 'bg-[var(--brand-surface)] border-[var(--brand-border)] hover:border-[var(--brand-dark)] hover:shadow-sm active:scale-[0.98]'
-              }`}
-            >
-              <div className="flex justify-between items-start mb-2">
-                <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider text-[var(--brand-border)] bg-[var(--brand-muted)] px-2 py-0.5 rounded-full">{product.category}</span>
-                <span className="font-bold text-[var(--brand-dark)]">
-                  {isPieceUnit(product.unit)
-                    ? formatInventoryUnitPrice(product.price, PIECE_UNIT)
-                    : formatInventoryUnitPrice(product.price, product.unit)}
-                </span>
-              </div>
-              <h4 className="font-medium text-[var(--brand-dark)] mb-1 truncate text-sm md:text-base">{product.name}</h4>
-              <p className={`text-xs ${product.stock < 10 ? 'text-[var(--brand-accent)]' : 'text-[var(--brand-border)]'}`}>
-                {product.stock} in stock • {isPieceUnit(product.unit) ? 'tap to choose pieces' : 'tap to choose weight'}
-              </p>
-            </button>
-          ))}
-        </div>
-      </div>
+          <div className="billing-products__grid">
+            {filteredProducts.map(product => (
+              <button
+                key={product.id}
+                type="button"
+                onClick={() => handleProductSelect(product)}
+                disabled={product.stock <= 0}
+                className="billing-product-card"
+              >
+                <div className="flex justify-between items-start gap-1 mb-0.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-[var(--brand-border)] truncate max-w-[55%]">{product.category}</span>
+                  <span className="text-[10px] sm:text-xs font-bold text-[var(--brand-dark)] shrink-0">
+                    {isPieceUnit(product.unit)
+                      ? formatInventoryUnitPrice(product.price, PIECE_UNIT)
+                      : formatInventoryUnitPrice(product.price, product.unit)}
+                  </span>
+                </div>
+                <h4 className="font-semibold text-[var(--brand-dark)] truncate text-[11px] sm:text-sm leading-tight">{product.name}</h4>
+                <p className={`text-[9px] sm:text-[10px] mt-0.5 ${product.stock < 10 ? 'text-[var(--brand-accent)]' : 'text-[var(--brand-border)]'}`}>
+                  {product.stock} left
+                </p>
+              </button>
+            ))}
+          </div>
+        </section>
 
-      {/* Cart Sidebar (Desktop: Static, Mobile: Bottom Sheet logic could go here, but for now just stacking) */}
-      <div className="w-full md:w-96 bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm flex flex-col overflow-hidden shrink-0 h-[40vh] md:h-auto">
-        {/* Group Navigation */}
-        <div className="p-3 border-b border-[var(--brand-border)] bg-[var(--brand-surface)]">
-          <div className="flex flex-wrap gap-2 items-center mb-3">
-            {groups.map((group) => (
-              <div key={group.id} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setActiveGroupId(group.id)}
-                  className={`px-3 py-2 rounded-2xl border text-xs font-semibold transition ${
-                    activeGroup?.id === group.id
-                      ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)]/10 text-[var(--brand-dark)]'
-                      : 'border-[var(--brand-border)] bg-white text-[var(--brand-border)] hover:border-[var(--brand-dark)]'
-                  }`}
-                >
-                  {group.name}
-                </button>
-                {group.customer && (
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      clearCustomerFromGroup(group.id);
-                    }}
-                    className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-[var(--brand-border)] bg-white text-[var(--brand-border)] shadow-sm hover:text-[var(--brand-dark)]"
-                    aria-label={`Remove customer from ${group.name}`}
-                  >
-                    <X size={10} />
-                  </button>
-                )}
-              </div>
+        <aside className="billing-cart">
+          <div className="billing-queue">
+            {groups.map((group, index) => (
+              <button
+                key={group.id}
+                type="button"
+                onClick={() => setActiveGroupId(group.id)}
+                className={`billing-queue__chip ${activeGroup?.id === group.id ? 'billing-queue__chip--active' : ''}`}
+              >
+                <span className="billing-queue__name">#{index + 1} {group.customer?.name ?? group.name}</span>
+                <span className="billing-queue__meta">{group.items.length} items • ₹{getGroupTotal(group).toFixed(0)}</span>
+              </button>
             ))}
             <button
+              type="button"
               onClick={() => createGroup(`Customer ${groups.length + 1}`)}
-              className="px-3 py-2 rounded-2xl border border-[var(--brand-border)] bg-white text-[var(--brand-dark)] text-xs font-semibold hover:border-[var(--brand-dark)]"
+              className="billing-queue__chip shrink-0 !items-center !justify-center !min-w-[4.5rem] text-[var(--brand-dark)] font-semibold"
             >
-              + Add Group
+              + Add
             </button>
           </div>
-          <div className="text-xs text-[var(--brand-border)]">
-            {activeGroup ? `Active group: ${activeGroup.name}` : 'Create a group and add items.'}
-          </div>
-        </div>
 
-        {/* Customer Section */}
-        <div className="p-3 md:p-4 border-b border-[var(--brand-border)] bg-[var(--brand-muted)]">
-          {activeGroup ? (
-            activeGroup.customer ? (
-              <div className="flex justify-between items-center bg-[var(--brand-surface)] p-2 rounded-lg border border-[var(--brand-border)]">
-                <div>
-                  <div className="text-sm font-bold text-[var(--brand-dark)]">{activeGroup.customer.name}</div>
-                  <div className="text-xs text-[var(--brand-dark)] font-medium flex items-center gap-1">
-                    <Award size={12} /> {activeGroup.customer.loyaltyPoints} Points
+          <div className="billing-cart__customer">
+            {activeGroup ? (
+              activeGroup.customer ? (
+                <div className="flex justify-between items-center gap-2 bg-white p-1.5 rounded-lg border border-[var(--brand-border)]">
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-[var(--brand-dark)] truncate">{activeGroup.customer.name}</div>
+                    <div className="text-[10px] text-[var(--brand-dark)] flex items-center gap-1">
+                      <Award size={10} /> {activeGroup.customer.loyaltyPoints} pts
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => clearCustomerFromGroup(activeGroup.id)}
+                    className="shrink-0 p-1 rounded-full border border-[var(--brand-border)] text-[var(--brand-border)] hover:text-[var(--brand-dark)]"
+                    aria-label="Remove customer"
+                  >
+                    <X size={12} />
+                  </button>
                 </div>
-                <button
-                  onClick={() => clearCustomerFromGroup(activeGroup.id)}
-                  className="inline-flex items-center gap-1 rounded-full border border-[var(--brand-border)] px-2 py-1 text-[11px] font-medium text-[var(--brand-border)] hover:border-[var(--brand-dark)] hover:text-[var(--brand-dark)]"
-                >
-                  <X size={14} />
-                  Remove customer
-                </button>
+              ) : (
+                <div className="relative">
+                  <User className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--brand-border)]" size={14} />
+                  <input
+                    type="text"
+                    placeholder="Customer name / phone"
+                    className="w-full pl-7 pr-2 py-1.5 rounded-lg border border-[var(--brand-border)] text-xs bg-white"
+                    value={customerSearch}
+                    onChange={(e) => setCustomerSearch(e.target.value)}
+                  />
+                  {customerSearch && filteredCustomers.length > 0 && (
+                    <div className="absolute top-full left-0 w-full bg-white border border-[var(--brand-border)] rounded-lg shadow-lg mt-1 z-20 max-h-32 overflow-y-auto">
+                      {filteredCustomers.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          className="w-full text-left px-3 py-1.5 hover:bg-[var(--brand-muted)] text-xs"
+                          onClick={() => assignCustomerToGroup(c)}
+                        >
+                          <div className="font-medium text-[var(--brand-dark)]">{c.name}</div>
+                          <div className="text-[10px] text-[var(--brand-border)]">{c.phone}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            ) : (
+              <p className="text-[10px] text-[var(--brand-border)]">Tap + Add to start a customer bill.</p>
+            )}
+          </div>
+
+          <div className="billing-cart__items">
+            {!activeGroup || activeGroupItems.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-[var(--brand-border)] text-xs py-4">
+                <ShoppingBag size={24} className="mb-1 opacity-50" />
+                <p>{activeGroup ? 'Add products to this bill.' : 'No customer selected.'}</p>
               </div>
             ) : (
-              <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--brand-border)]" size={18} />
-                <input
-                  type="text"
-                  placeholder="Find Customer (Name/Phone)"
-                  className="w-full pl-10 pr-4 py-2 rounded-lg border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] text-sm text-[var(--brand-text-dark)] bg-white"
-                  value={customerSearch}
-                  onChange={(e) => setCustomerSearch(e.target.value)}
-                />
-                {customerSearch && filteredCustomers.length > 0 && (
-                  <div className="absolute top-full left-0 w-full bg-[var(--brand-surface)] border border-[var(--brand-border)] rounded-lg shadow-lg mt-1 z-20 max-h-48 overflow-y-auto">
-                    {filteredCustomers.map((c) => (
-                      <button
-                        key={c.id}
-                        className="w-full text-left px-4 py-2 hover:bg-[var(--brand-muted)] text-sm"
-                        onClick={() => assignCustomerToGroup(c)}
-                      >
-                        <div className="font-medium text-[var(--brand-dark)]">{c.name}</div>
-                        <div className="text-xs text-[var(--brand-border)]">{c.phone} • {c.loyaltyPoints} pts</div>
-                      </button>
-                    ))}
+              activeGroupItems.map((item) => (
+                <div key={item.cartLineId} className="billing-cart-item">
+                  <div className="min-w-0 flex-1">
+                    <div className="billing-cart-item__name">{item.name}</div>
+                    <div className="billing-cart-item__meta">{item.unit} • ₹{item.price.toFixed(2)}</div>
                   </div>
-                )}
-              </div>
-            )
-          ) : (
-            <div className="text-sm text-[var(--brand-border)]">Select or add a group, then assign a customer.</div>
-          )}
-        </div>
-
-        {/* Items List */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-[var(--brand-surface)]">
-          {!activeGroup || activeGroupItems.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-[var(--brand-border)] text-sm">
-              <ShoppingBag size={32} className="mb-2 opacity-50" />
-              <p>{activeGroup ? 'No items in the active group yet.' : 'No group selected.'}</p>
-            </div>
-          ) : (
-            activeGroupItems.map((item) => (
-              <div key={item.cartLineId} className="flex items-center gap-3 bg-[var(--brand-surface)] p-2 rounded-lg border border-[var(--brand-border)]">
-                <div className="flex-1 min-w-0">
-                  <h4 className="font-medium text-sm text-[var(--brand-dark)] truncate">{item.name}</h4>
-                  <div className="text-xs text-[var(--brand-border)]">{item.unit} • ₹{item.price.toFixed(2)} x {item.quantity}</div>
-                </div>
-                <div className="flex items-center gap-2">
+                  <div className="billing-cart-item__qty">
+                    <button type="button" onClick={() => updateQuantity(activeGroup.id, item.cartLineId, -1)} aria-label="Decrease">
+                      <Minus size={10} />
+                    </button>
+                    <span className="text-[10px] font-semibold w-3 text-center">{item.quantity}</span>
+                    <button type="button" onClick={() => updateQuantity(activeGroup.id, item.cartLineId, 1)} aria-label="Increase">
+                      <Plus size={10} />
+                    </button>
+                  </div>
                   <button
-                    onClick={() => updateQuantity(activeGroup.id, item.cartLineId, -1)}
-                    className="w-6 h-6 flex items-center justify-center rounded-full bg-[var(--brand-muted)] hover:bg-[var(--brand-surface)] text-[var(--brand-dark)] transition-colors"
+                    type="button"
+                    onClick={() => removeItem(activeGroup.id, item.cartLineId)}
+                    className="p-0.5 text-[var(--brand-border)] hover:text-[var(--brand-dark)]"
+                    aria-label="Remove item"
                   >
-                    <Minus size={12} />
+                    <X size={12} />
                   </button>
-                  <span className="font-medium text-sm w-4 text-center">{item.quantity}</span>
-                  <button
-                    onClick={() => updateQuantity(activeGroup.id, item.cartLineId, 1)}
-                    className="w-6 h-6 flex items-center justify-center rounded-full bg-[var(--brand-muted)] hover:bg-[var(--brand-surface)] text-[var(--brand-dark)] transition-colors"
-                  >
-                    <Plus size={12} />
-                  </button>
+                  <div className="billing-cart-item__price">₹{(item.price * item.quantity).toFixed(0)}</div>
                 </div>
-                <button
-                  onClick={() => removeItem(activeGroup.id, item.cartLineId)}
-                  className="ml-2 p-1 rounded-md text-[var(--brand-border)] hover:text-[var(--brand-dark)]"
-                  aria-label="Remove item"
-                >
-                  <X size={16} />
-                </button>
-                <div className="font-bold text-sm text-[var(--brand-dark)] min-w-[3rem] text-right">
-                  ₹{(item.price * item.quantity).toFixed(2)}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* Totals Section */}
-        <div className="p-4 bg-[var(--brand-surface)] border-t border-[var(--brand-border)]">
-          {activeGroupCanRedeem && (
-             <div className="mb-3 flex items-center justify-between bg-[var(--brand-accent)]/20 p-2 rounded-lg border border-[var(--brand-border)]">
-               <div className="flex items-center gap-2">
-                 <input
-                    type="checkbox"
-                    id="redeem"
-                    checked={activeGroupRedeemPoints}
-                    onChange={(e) => toggleRedeemPoints(e.target.checked)}
-                    className="rounded text-[var(--brand-accent)] focus:ring-[var(--brand-accent)] w-4 h-4"
-                 />
-                 <label htmlFor="redeem" className="text-xs font-medium text-[var(--brand-dark)] cursor-pointer">
-                    Redeem 50 pts (₹50 off)
-                 </label>
-               </div>
-             </div>
-          )}
-
-          <div className="space-y-3 mb-4">
-            <div className="text-[var(--brand-border)] text-xs">
-              Checkout will show each customer's invoice separately with independent totals.
-            </div>
+              ))
+            )}
           </div>
 
-          <button 
-            onClick={handleProceedToPayment}
-            disabled={!hasInvoiceItems}
-            className="w-full bg-[var(--brand-dark)] text-[var(--brand-text-light)] py-3 rounded-xl font-semibold hover:bg-[var(--brand-bg)] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-[var(--brand-border)] active:scale-95"
-          >
-            Checkout
-          </button>
-        </div>
+          <div className="billing-cart__footer">
+            {activeGroupCanRedeem && (
+              <label className="mb-2 flex items-center gap-2 rounded-lg border border-[var(--brand-border)] bg-[var(--brand-accent)]/15 px-2 py-1.5 text-[10px] font-medium text-[var(--brand-dark)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={activeGroupRedeemPoints}
+                  onChange={(e) => toggleRedeemPoints(e.target.checked)}
+                  className="rounded w-3.5 h-3.5"
+                />
+                Redeem 50 pts (₹50 off)
+              </label>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleHoldBill}
+                disabled={!hasInvoiceItems}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 border border-[var(--brand-border)] bg-white text-[var(--brand-dark)] py-2 rounded-lg text-sm font-semibold hover:bg-[var(--brand-muted)] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <PauseCircle size={14} />
+                Hold
+              </button>
+              <button
+                type="button"
+                onClick={handleProceedToPayment}
+                disabled={!hasInvoiceItems}
+                className="flex-[2] bg-[var(--brand-dark)] text-[var(--brand-text-light)] py-2 rounded-lg text-sm font-semibold hover:bg-[var(--brand-bg)] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Checkout • ₹{finalTotal.toFixed(2)}
+              </button>
+            </div>
+          </div>
+        </aside>
       </div>
 
+      {showHeldPanel && (
+        <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-3 sm:p-4">
+          <div className="app-modal-panel bg-[var(--brand-surface)] rounded-2xl shadow-xl border border-[var(--brand-border)] overflow-hidden w-full max-w-md">
+            <div className="p-4 sm:p-5 border-b border-[var(--brand-border)] flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-bold text-[var(--brand-dark)]">Held Bills</h3>
+                <p className="text-sm text-[var(--brand-border)]">Pause a bill and serve another customer.</p>
+              </div>
+              <button type="button" onClick={() => setShowHeldPanel(false)} className="p-1 text-[var(--brand-border)]">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-4 sm:p-5 max-h-[60vh] overflow-y-auto space-y-3">
+              {heldBills.length === 0 ? (
+                <p className="text-sm text-[var(--brand-border)] text-center py-6">No held bills. Use Hold on the cart to save a bill for later.</p>
+              ) : (
+                heldBills.map((session) => {
+                  const itemCount = session.groups.reduce((sum, group) => sum + group.items.length, 0);
+                  const savedAt = new Date(session.savedAt).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' });
+                  return (
+                    <div key={session.id} className="rounded-xl border border-[var(--brand-border)] bg-white p-4 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-[var(--brand-dark)] truncate">{session.label}</p>
+                        <p className="text-xs text-[var(--brand-border)] mt-0.5">
+                          {session.groups.length} customer{session.groups.length === 1 ? '' : 's'} • {itemCount} items • {savedAt}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleResumeHeldBill(session)}
+                          className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-[var(--brand-dark)] text-white text-xs font-semibold hover:bg-[var(--brand-bg)]"
+                        >
+                          <RotateCcw size={12} />
+                          Resume
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteHeldBill(session.id)}
+                          className="p-2 rounded-lg border border-[var(--brand-border)] text-[var(--brand-border)] hover:text-red-600 hover:border-red-200"
+                          aria-label="Delete held bill"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {piecePickerProduct && (
-        <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[var(--brand-surface)] rounded-2xl shadow-xl w-full max-w-lg overflow-hidden border border-[var(--brand-border)] animate-scale-up">
+        <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-3 sm:p-4">
+          <div className="app-modal-panel bg-[var(--brand-surface)] rounded-2xl shadow-xl overflow-hidden border border-[var(--brand-border)] animate-scale-up">
             <div className="p-5 border-b border-[var(--brand-border)] bg-[var(--brand-muted)]">
               <div className="flex justify-between items-start gap-3">
                 <div>
@@ -1005,8 +1452,8 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, onComplete
       )}
 
       {weightPickerProduct && (
-        <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[var(--brand-surface)] rounded-2xl shadow-xl w-full max-w-lg overflow-hidden border border-[var(--brand-border)] animate-scale-up">
+        <div className="fixed inset-0 bg-[var(--brand-dark)]/40 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-3 sm:p-4">
+          <div className="app-modal-panel bg-[var(--brand-surface)] rounded-2xl shadow-xl overflow-hidden border border-[var(--brand-border)] animate-scale-up">
             <div className="p-5 border-b border-[var(--brand-border)] bg-[var(--brand-muted)]">
               <div className="flex justify-between items-start gap-3">
                 <div>
