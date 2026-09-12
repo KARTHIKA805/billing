@@ -27,5 +27,62 @@ drop policy if exists "Allow all access to sale_items" on sale_items;
 create policy "Allow all access to sale_items"
   on sale_items for all to public using (true) with check (true);
 
+-- Add image_url to categories table (safe: uses IF NOT EXISTS)
+alter table categories add column if not exists image_url text;
+
+-- Create Storage Bucket for Category Images
+insert into storage.buckets (id, name, public)
+values ('category-images', 'category-images', true)
+on conflict (id) do nothing;
+
+-- Set up RLS Policies for category-images Storage Bucket
+drop policy if exists "Allow public read access to category images" on storage.objects;
+create policy "Allow public read access to category images"
+  on storage.objects for select
+  to public
+  using (bucket_id = 'category-images');
+
+drop policy if exists "Allow public insert access to category images" on storage.objects;
+create policy "Allow public insert access to category images"
+  on storage.objects for insert
+  to public
+  with check (bucket_id = 'category-images');
+
+drop policy if exists "Allow public update access to category images" on storage.objects;
+create policy "Allow public update access to category images"
+  on storage.objects for update
+  to public
+  using (bucket_id = 'category-images')
+  with check (bucket_id = 'category-images');
+
+drop policy if exists "Allow public delete access to category images" on storage.objects;
+create policy "Allow public delete access to category images"
+  on storage.objects for delete
+  to public
+  using (bucket_id = 'category-images');
+
 -- Done!
-select 'Migration complete. Sales table now has all required columns.' as status;
+select 'Migration complete. Sales and categories tables and storage bucket now have all required columns/policies.' as status;
+
+-- ============================================================
+-- MIGRATION: Soft-delete support for products and ingredients
+-- ============================================================
+alter table products add column if not exists deleted_at timestamp with time zone;
+alter table ingredients add column if not exists deleted_at timestamp with time zone;
+
+-- ============================================================
+-- MIGRATION: Fix delete failures from inventory_adjustments FK
+-- ============================================================
+alter table inventory_adjustments drop constraint if exists inventory_adjustments_product_id_fkey;
+alter table inventory_adjustments
+  add constraint inventory_adjustments_product_id_fkey
+  foreign key (product_id) references products(id) on delete set null;
+
+alter table inventory_adjustments drop constraint if exists inventory_adjustments_ingredient_id_fkey;
+alter table inventory_adjustments
+  add constraint inventory_adjustments_ingredient_id_fkey
+  foreign key (ingredient_id) references ingredients(id) on delete set null;
+
+-- Split payment support on sales
+alter table sales add column if not exists cash_paid numeric default 0;
+alter table sales add column if not exists upi_paid numeric default 0;

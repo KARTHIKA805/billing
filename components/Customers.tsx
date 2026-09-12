@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { Customer, SaleRecord } from '../types';
-import { Search, UserPlus, History, Award, X } from 'lucide-react';
+import { Search, UserPlus, History, Award, X, Trash2 } from 'lucide-react';
 
 interface CustomersProps {
   customers: Customer[];
   sales: SaleRecord[];
   onAddCustomer: (customer: Omit<Customer, 'id' | 'joinDate' | 'loyaltyPoints' | 'totalSpent'>) => void;
+  onDeleteCustomer?: (id: string) => void;
 }
 
-const Customers: React.FC<CustomersProps> = ({ customers, sales, onAddCustomer }) => {
+const Customers: React.FC<CustomersProps> = ({ customers, sales, onAddCustomer, onDeleteCustomer }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -60,8 +61,8 @@ const Customers: React.FC<CustomersProps> = ({ customers, sales, onAddCustomer }
 
       {/* Customer List */}
       <div className="bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
+        <div className="data-table-wrap">
+          <table className="data-table">
             <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
               <tr>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Customer</th>
@@ -99,13 +100,28 @@ const Customers: React.FC<CustomersProps> = ({ customers, sales, onAddCustomer }
                       ₹{customer.totalSpent.toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <button 
-                        onClick={() => setSelectedCustomer(customer)}
-                        className="text-[var(--brand-border)] hover:text-[var(--brand-dark)] p-2 hover:bg-[var(--brand-muted)] rounded-lg transition-all"
-                        title="View History"
-                      >
-                        <History size={18} />
-                      </button>
+                      <div className="flex justify-end gap-2">
+                        <button 
+                          onClick={() => setSelectedCustomer(customer)}
+                          className="text-[var(--brand-border)] hover:text-[var(--brand-dark)] p-2 hover:bg-[var(--brand-muted)] rounded-lg transition-all"
+                          title="View History"
+                        >
+                          <History size={18} />
+                        </button>
+                        {onDeleteCustomer && (
+                          <button 
+                            onClick={() => {
+                              if (window.confirm(`Are you sure you want to delete ${customer.name}?`)) {
+                                onDeleteCustomer(customer.id);
+                              }
+                            }}
+                            className="text-[var(--brand-border)] hover:text-red-500 p-2 hover:bg-red-50 rounded-lg transition-all"
+                            title="Delete Customer"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))

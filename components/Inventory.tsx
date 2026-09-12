@@ -1,6 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import { Category, Product, Ingredient, InventoryAdjustment } from '../types';
-import { ArrowUpDown, AlertCircle, Plus, X, Pencil, Trash2, Tag, Edit3, Box, Archive } from 'lucide-react';
+import {
+  PRODUCT_UNIT_OPTIONS,
+  PIECE_UNIT,
+  isPieceUnit,
+  normalizeProductUnit,
+  getWeightPriceBreakdown,
+  getPieceBillingOptions,
+  formatInventoryUnitPrice,
+} from '../constants';
+import { ArrowUpDown, AlertCircle, Plus, X, Pencil, Trash2, Tag, Edit3, Box, Archive, RotateCcw } from 'lucide-react';
 
 interface InventoryProps {
   products: Product[];
@@ -16,15 +25,25 @@ interface InventoryProps {
   onDeleteIngredient: (id: string) => void;
   onAdjustProductStock: (productId: string, adjustment: number, reason: string) => void;
   onAdjustIngredientStock: (ingredientId: string, adjustment: number, reason: string) => void;
+  onFetchDeletedItems: () => Promise<{ products: Product[]; ingredients: Ingredient[] }>;
+  onRestoreProduct: (id: string) => void;
+  onRestoreIngredient: (id: string) => void;
   canEdit?: boolean;
 }
 
-type SortField = 'name' | 'profit' | 'margin' | 'stock' | 'price';
-const ALLOWED_UNITS = ['pcs', 'kg'];
+type ListMode = 'active' | 'deleted';
 
-const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients, inventoryAdjustments, onAddProduct, onAddCategory, onUpdateProduct, onDeleteProduct, onAddIngredient, onUpdateIngredient, onDeleteIngredient, onAdjustProductStock, onAdjustIngredientStock, canEdit = true }) => {
-  const [sortField, setSortField] = useState<SortField>('profit');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+type SortField = 'name' | 'profit' | 'margin' | 'price';
+const ALLOWED_UNITS = ['pcs', 'kg', 'L'];
+const MENU_ITEM_UNITS = PRODUCT_UNIT_OPTIONS;
+
+const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients, inventoryAdjustments, onAddProduct, onAddCategory, onUpdateProduct, onDeleteProduct, onAddIngredient, onUpdateIngredient, onDeleteIngredient, onAdjustProductStock, onAdjustIngredientStock, onFetchDeletedItems, onRestoreProduct, onRestoreIngredient, canEdit = true }) => {
+  const [listMode, setListMode] = useState<ListMode>('active');
+  const [deletedProducts, setDeletedProducts] = useState<Product[]>([]);
+  const [deletedIngredients, setDeletedIngredients] = useState<Ingredient[]>([]);
+  const [isLoadingDeleted, setIsLoadingDeleted] = useState(false);
+  const [sortField, setSortField] = useState<SortField>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [selectedProductForQuickUpdate, setSelectedProductForQuickUpdate] = useState<Product | null>(null);
   const [quickAdjustAmount, setQuickAdjustAmount] = useState('0');
@@ -34,7 +53,6 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategory, setNewCategory] = useState('');
   const [newCategoryImage, setNewCategoryImage] = useState<File | null>(null);
-  const [customCategories, setCustomCategories] = useState<string[]>([]);
   const [selectedProductForAdjust, setSelectedProductForAdjust] = useState<Product | null>(null);
   const [selectedIngredientForAdjust, setSelectedIngredientForAdjust] = useState<Ingredient | null>(null);
   const [selectedIngredientForEdit, setSelectedIngredientForEdit] = useState<Ingredient | null>(null);
@@ -53,7 +71,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     cost: '',
     stock: '',
     minStock: '',
-    unit: 'pcs'
+    unit: '100 gms'
   });
 
   const handleSort = (field: SortField) => {
@@ -67,27 +85,28 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
 
   const categoryOptions = useMemo(() => {
     const categoryNames = [
-      ...customCategories,
-      ...categories.map(category => category.name.trim()).filter(Boolean),
-      ...products
-      .map(product => product.category.trim())
-      .filter(Boolean)
+      ...categories.map(category => category.name.trim()).filter(Boolean)
     ];
 
     if (formData.category.trim()) {
       categoryNames.push(formData.category.trim());
     }
 
-    return Array.from(new Set(categoryNames)).sort((a, b) => a.localeCompare(b));
-  }, [customCategories, categories, products, formData.category]);
+    const uniqueCategories: string[] = [];
+    const seen = new Set<string>();
+    for (const name of categoryNames) {
+      const lower = name.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        uniqueCategories.push(name);
+      }
+    }
 
-  const categoryFilterOptions = useMemo(() => [
-    'All',
-    ...new Set(categoryOptions)
-  ], [categoryOptions]);
+    return uniqueCategories.sort((a, b) => a.localeCompare(b));
+  }, [categories, formData.category]);
 
   const resetForm = () => {
-    setFormData({ name: '', category: '', price: '', cost: '', stock: '', minStock: '', unit: 'pcs' });
+    setFormData({ name: '', category: '', price: '', cost: '', stock: '', minStock: '', unit: '100 gms' });
     setEditingId(null);
     setIsAddingCategory(false);
     setNewCategory('');
@@ -109,7 +128,11 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
       cost: product.cost.toString(),
       stock: product.stock.toString(),
       minStock: product.minStock.toString(),
-      unit: ALLOWED_UNITS.includes(product.unit) ? product.unit : 'pcs'
+      unit: isPieceUnit(product.unit)
+        ? PIECE_UNIT
+        : MENU_ITEM_UNITS.includes(product.unit)
+          ? product.unit
+          : product.unit || '100 gms'
     });
     setIsModalOpen(true);
   };
@@ -120,8 +143,49 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
   };
 
   const handleDeleteClick = (id: string, name: string) => {
-    if (window.confirm(`Are you sure you want to delete "${name}"? This action cannot be undone.`)) {
+    if (window.confirm(`Move "${name}" to deleted items? You can restore it later from the Deleted Items view.`)) {
       onDeleteProduct(id);
+    }
+  };
+
+  const loadDeletedItems = async () => {
+    setIsLoadingDeleted(true);
+    try {
+      const { products: deletedProds, ingredients: deletedIngs } = await onFetchDeletedItems();
+      setDeletedProducts(deletedProds);
+      setDeletedIngredients(deletedIngs);
+    } catch (error) {
+      console.error('Failed to load deleted items:', error);
+      alert('Failed to load deleted items.');
+    } finally {
+      setIsLoadingDeleted(false);
+    }
+  };
+
+  const switchListMode = async (mode: ListMode) => {
+    setListMode(mode);
+    if (mode === 'deleted') {
+      await loadDeletedItems();
+    }
+  };
+
+  const handleRestoreProduct = async (id: string) => {
+    try {
+      await onRestoreProduct(id);
+      setDeletedProducts((prev) => prev.filter((product) => product.id !== id));
+    } catch (error) {
+      console.error('Failed to restore product:', error);
+      alert('Failed to restore product.');
+    }
+  };
+
+  const handleRestoreIngredient = async (id: string) => {
+    try {
+      await onRestoreIngredient(id);
+      setDeletedIngredients((prev) => prev.filter((ingredient) => ingredient.id !== id));
+    } catch (error) {
+      console.error('Failed to restore ingredient:', error);
+      alert('Failed to restore ingredient.');
     }
   };
 
@@ -222,10 +286,6 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     const trimmedCategory = newCategory.trim();
     if (!trimmedCategory) return;
 
-    setCustomCategories(prev => {
-      const alreadyExists = prev.some(category => category.toLowerCase() === trimmedCategory.toLowerCase());
-      return alreadyExists ? prev : [...prev, trimmedCategory];
-    });
     setFormData({ ...formData, category: trimmedCategory });
     setNewCategory('');
     setIsAddingCategory(false);
@@ -242,11 +302,11 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     const productData = {
       name: formData.name.trim(),
       category: formData.category.trim(),
-      price: parseFloat(formData.price),
-      cost: parseFloat(formData.cost),
-      stock: parseInt(formData.stock),
-      minStock: parseInt(formData.minStock),
-      unit: formData.unit
+      price: formData.price.trim() ? parseFloat(formData.price) : 0,
+      cost: formData.cost.trim() ? parseFloat(formData.cost) : 0,
+      stock: editingId ? (formData.stock.trim() ? parseInt(formData.stock) || 0 : 0) : 0,
+      minStock: formData.minStock.trim() ? parseInt(formData.minStock) || 0 : 0,
+      unit: normalizeProductUnit(formData.unit || '100 gms')
     };
 
     if (editingId) {
@@ -259,6 +319,25 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
     resetForm();
   };
 
+  const menuItemUnitOptions = useMemo(() => {
+    if (formData.unit && !MENU_ITEM_UNITS.includes(formData.unit)) {
+      return [formData.unit, ...MENU_ITEM_UNITS];
+    }
+    return MENU_ITEM_UNITS;
+  }, [formData.unit]);
+
+  const isPieceProduct = isPieceUnit(formData.unit);
+
+  const billingPricePreview = useMemo(() => {
+    const price = formData.price.trim() ? parseFloat(formData.price) : 0;
+    const cost = formData.cost.trim() ? parseFloat(formData.cost) : 0;
+    if (!price || !formData.unit) return [];
+    if (isPieceUnit(formData.unit)) {
+      return getPieceBillingOptions(price);
+    }
+    return getWeightPriceBreakdown(price, formData.unit, cost);
+  }, [formData.price, formData.cost, formData.unit]);
+
   const sortedProducts = useMemo(() => {
     return [...products].sort((a, b) => {
       const profitA = a.price - a.cost;
@@ -268,11 +347,13 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
       let valB: number | string = 0;
 
       switch (sortField) {
-        case 'name': valA = a.name; valB = b.name; break;
-        case 'stock': valA = a.stock; valB = b.stock; break;
+        case 'name':
+          return sortDir === 'asc'
+            ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+            : b.name.localeCompare(a.name, undefined, { sensitivity: 'base' });
         case 'price': valA = a.price; valB = b.price; break;
         case 'profit': valA = profitA; valB = profitB; break;
-        case 'margin': valA = ((profitA / a.price) * 100); valB = ((profitB / b.price) * 100); break;
+        case 'margin': valA = a.price > 0 ? (profitA / a.price) * 100 : 0; valB = b.price > 0 ? (profitB / b.price) * 100 : 0; break;
       }
 
       if (valA < valB) return sortDir === 'asc' ? -1 : 1;
@@ -284,6 +365,10 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
   const filteredProducts = useMemo(() => {
     return sortedProducts.filter(product => categoryFilter === 'All' || product.category === categoryFilter);
   }, [sortedProducts, categoryFilter]);
+
+  const sortedIngredients = useMemo(() => {
+    return [...ingredients].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }, [ingredients]);
 
   const TableHeader = ({ field, label }: { field: SortField, label: string }) => (
     <th 
@@ -303,66 +388,99 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h3 className="text-lg font-bold text-[var(--brand-dark)]">Menu & Stock List</h3>
-          <p className="text-sm text-[var(--brand-border)]">Manage your product offerings and inventory levels.</p>
+          <p className="text-sm text-[var(--brand-border)]">
+            {listMode === 'active'
+              ? 'Manage your product offerings and inventory levels.'
+              : 'View and restore items that were removed from the menu.'}
+          </p>
         </div>
-        {canEdit ? (
-          <button 
-            onClick={openAddModal}
-            className="w-full md:w-auto bg-[var(--brand-dark)] text-[var(--brand-text-light)] px-5 py-3 rounded-xl font-medium hover:bg-[var(--brand-bg)] transition-colors shadow-lg shadow-[var(--brand-border)] flex items-center justify-center gap-2"
-          >
-            <Plus size={18} />
-            Add Item
-          </button>
-        ) : (
-          <div className="rounded-xl border border-[var(--brand-border)] bg-[var(--brand-muted)] px-4 py-3 text-sm text-[var(--brand-border)]">
-            Employee access: view only
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+          <div className="inline-flex rounded-xl border border-[var(--brand-border)] bg-white p-1">
+            <button
+              type="button"
+              onClick={() => switchListMode('active')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${listMode === 'active' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'text-[var(--brand-border)] hover:text-[var(--brand-dark)]'}`}
+            >
+              Active Items
+            </button>
+            <button
+              type="button"
+              onClick={() => switchListMode('deleted')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors inline-flex items-center gap-2 ${listMode === 'deleted' ? 'bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'text-[var(--brand-border)] hover:text-[var(--brand-dark)]'}`}
+            >
+              <Archive size={14} />
+              Deleted Items
+            </button>
           </div>
-        )}
+          {canEdit && listMode === 'active' ? (
+            <button 
+              onClick={openAddModal}
+              className="w-full sm:w-auto bg-[var(--brand-dark)] text-[var(--brand-text-light)] px-5 py-3 rounded-xl font-medium hover:bg-[var(--brand-bg)] transition-colors shadow-lg shadow-[var(--brand-border)] flex items-center justify-center gap-2"
+            >
+              <Plus size={18} />
+              Add Item
+            </button>
+          ) : listMode === 'active' ? (
+            <div className="rounded-xl border border-[var(--brand-border)] bg-[var(--brand-muted)] px-4 py-3 text-sm text-[var(--brand-border)]">
+              Employee access: view only
+            </div>
+          ) : null}
+        </div>
       </div>
 
+      {listMode === 'active' ? (
       <div className="bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-[var(--brand-border)] flex flex-col md:flex-row gap-4 md:items-center justify-between">
-          <div className="flex flex-col md:flex-row md:items-center md:gap-4">
-            <div className="flex items-center gap-3 mb-3 md:mb-0">
-              <span className="text-sm font-medium text-[var(--brand-dark)]">Category</span>
-            </div>
-            <div className="flex items-center gap-3 overflow-x-auto py-1">
+        <div className="category-strip-toolbar">
+          <span className="category-strip-toolbar__label">Browse by category</span>
+          <div className="category-strip-wrapper">
+            <div className="category-strip category-strip--compact">
               <button
                 type="button"
                 onClick={() => setCategoryFilter('All')}
-                className={`inline-flex flex-col items-center gap-1 px-3 py-2 rounded-lg border ${categoryFilter === 'All' ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'border-[var(--brand-border)] bg-white text-[var(--brand-dark)]'}`}
+                className={`category-chip ${categoryFilter === 'All' ? 'category-chip--active' : ''}`}
               >
-                <div className="w-16 h-12 bg-[var(--brand-muted)] rounded-md flex items-center justify-center text-xs">All</div>
+                <div className="category-chip__img-wrap">
+                  <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
+                    <circle cx="20" cy="20" r="20" fill="#7f1e2820" />
+                    <rect x="10" y="10" width="8" height="8" rx="2" fill="#7f1e28" opacity=".8" />
+                    <rect x="22" y="10" width="8" height="8" rx="2" fill="#7f1e28" opacity=".6" />
+                    <rect x="10" y="22" width="8" height="8" rx="2" fill="#7f1e28" opacity=".6" />
+                    <rect x="22" y="22" width="8" height="8" rx="2" fill="#7f1e28" opacity=".4" />
+                  </svg>
+                </div>
+                <span className="category-chip__label">All</span>
+                <span className="category-chip__bar" />
               </button>
               {categories.map(cat => (
                 <button
                   key={cat.id}
                   type="button"
                   onClick={() => setCategoryFilter(cat.name)}
-                  className={`inline-flex flex-col items-center gap-1 px-3 py-2 rounded-lg border ${categoryFilter === cat.name ? 'border-[var(--brand-dark)] bg-[var(--brand-dark)] text-[var(--brand-text-light)]' : 'border-[var(--brand-border)] bg-white text-[var(--brand-dark)]'}`}
+                  className={`category-chip ${categoryFilter === cat.name ? 'category-chip--active' : ''}`}
                 >
-                  {cat.imageUrl ? (
-                    <img src={cat.imageUrl} alt={cat.name} className="w-16 h-12 object-cover rounded-md" />
-                  ) : (
-                    <div className="w-16 h-12 bg-[var(--brand-muted)] rounded-md flex items-center justify-center text-xs">{cat.name}</div>
-                  )}
-                  <span className="text-xs mt-1">{cat.name}</span>
+                  <div className="category-chip__img-wrap">
+                    {cat.imageUrl ? (
+                      <img src={cat.imageUrl} alt={cat.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[var(--brand-dark)] text-lg font-semibold">
+                        {cat.name.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+                  <span className="category-chip__label">{cat.name}</span>
+                  <span className="category-chip__bar" />
                 </button>
               ))}
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-[var(--brand-border)]">Quick stock update</span>
-          </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
+        <div className="data-table-wrap">
+          <table className="data-table">
             <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
               <tr>
                 <TableHeader field="name" label="Product" />
-                <TableHeader field="stock" label="Stock Level" />
                 <TableHeader field="price" label="Price" />
-                <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider hidden md:table-cell">Cost</th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Cost</th>
                 <TableHeader field="profit" label="Profit / Unit" />
                 <TableHeader field="margin" label="Margin" />
                 <th className="px-6 py-4 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Status</th>
@@ -370,9 +488,16 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredProducts.map((product) => {
+              {filteredProducts.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-6 py-10 text-center text-[var(--brand-border)]">
+                    No products found for this category.
+                  </td>
+                </tr>
+              ) : filteredProducts.map((product) => {
                 const profit = product.price - product.cost;
-                const margin = ((profit / product.price) * 100).toFixed(0);
+                const marginValue = product.price > 0 ? ((profit / product.price) * 100) : 0;
+                const margin = marginValue.toFixed(0);
                 const isLowStock = product.stock <= product.minStock;
 
                 return (
@@ -383,17 +508,11 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                         <span className="text-xs text-[var(--brand-border)]">{product.category}</span>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
-                      <span className={`font-mono text-sm ${isLowStock ? 'text-[var(--brand-accent)] font-bold' : 'text-[var(--brand-text-dark)]'}`}>
-                        {product.stock}
-                      </span>
-                      <span className="text-xs text-[var(--brand-border)] ml-1">{product.unit}</span>
-                    </td>
                     <td className="px-6 py-4 text-sm text-[var(--brand-text-dark)]">₹{product.price.toFixed(2)}</td>
-                    <td className="px-6 py-4 text-sm text-[var(--brand-border)] hidden md:table-cell">₹{product.cost.toFixed(2)}</td>
+                    <td className="px-6 py-4 text-sm text-[var(--brand-border)]">₹{product.cost.toFixed(2)}</td>
                     <td className="px-6 py-4 text-sm text-[var(--brand-dark)]">+₹{profit.toFixed(2)}</td>
                     <td className="px-6 py-4">
-                      <span className={`inline-flex items-center justify-center rounded-full px-2 py-1 text-xs font-semibold ${margin >= 30 ? 'bg-emerald-100 text-emerald-700' : margin >= 15 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>
+                      <span className={`inline-flex items-center justify-center rounded-full px-2 py-1 text-xs font-semibold ${marginValue >= 30 ? 'bg-emerald-100 text-emerald-700' : marginValue >= 15 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>
                         {margin}%
                       </span>
                     </td>
@@ -401,12 +520,12 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                       {isLowStock ? (
                         <div className="flex items-center gap-1.5 text-[var(--brand-dark)] bg-[var(--brand-accent)]/20 px-2 py-1 rounded-full w-fit">
                           <AlertCircle size={14} />
-                          <span className="text-xs font-medium hidden sm:inline">Low Stock</span>
+                          <span className="text-xs font-medium">Low Stock</span>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5 text-[var(--brand-border)]">
                           <div className="w-2 h-2 rounded-full bg-[var(--brand-accent)]"></div>
-                          <span className="text-xs hidden sm:inline">OK</span>
+                          <span className="text-xs">OK</span>
                         </div>
                       )}
                     </td>
@@ -446,7 +565,100 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
           </table>
         </div>
       </div>
+      ) : (
+      <div className="bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-[var(--brand-border)] bg-[var(--brand-muted)]">
+          <h3 className="text-lg font-bold text-[var(--brand-dark)]">Deleted Items</h3>
+          <p className="text-sm text-[var(--brand-border)]">Restore products or ingredients removed from the menu.</p>
+        </div>
+        {isLoadingDeleted ? (
+          <div className="px-6 py-12 text-center text-[var(--brand-border)]">Loading deleted items...</div>
+        ) : (
+          <div className="divide-y divide-[var(--brand-border)]">
+            <div className="data-table-wrap">
+              <table className="data-table">
+                <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Deleted Product</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Category</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Price</th>
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--brand-border)]">
+                  {deletedProducts.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-8 text-center text-[var(--brand-border)]">No deleted products.</td>
+                    </tr>
+                  ) : deletedProducts.map((product) => (
+                    <tr key={product.id} className="hover:bg-[var(--brand-muted)]/60">
+                      <td className="px-6 py-4 font-medium text-[var(--brand-dark)]">{product.name}</td>
+                      <td className="px-6 py-4 text-sm text-[var(--brand-border)]">{product.category || '—'}</td>
+                      <td className="px-6 py-4 text-sm text-[var(--brand-text-dark)]">₹{product.price.toFixed(2)}</td>
+                      <td className="px-6 py-4 text-right">
+                        {canEdit ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreProduct(product.id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
+                          >
+                            <RotateCcw size={14} />
+                            Restore
+                          </button>
+                        ) : (
+                          <span className="text-sm text-[var(--brand-border)]">View only</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
+            <div className="data-table-wrap">
+              <table className="data-table">
+                <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Deleted Ingredient</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Unit</th>
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--brand-border)]">
+                  {deletedIngredients.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-6 py-8 text-center text-[var(--brand-border)]">No deleted ingredients.</td>
+                    </tr>
+                  ) : deletedIngredients.map((ingredient) => (
+                    <tr key={ingredient.id} className="hover:bg-[var(--brand-muted)]/60">
+                      <td className="px-6 py-4 font-medium text-[var(--brand-dark)]">{ingredient.name}</td>
+                      <td className="px-6 py-4 text-sm text-[var(--brand-border)]">{ingredient.unit}</td>
+                      <td className="px-6 py-4 text-right">
+                        {canEdit ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreIngredient(ingredient.id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
+                          >
+                            <RotateCcw size={14} />
+                            Restore
+                          </button>
+                        ) : (
+                          <span className="text-sm text-[var(--brand-border)]">View only</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+      )}
+
+      {listMode === 'active' && (
+      <>
       {/* Ingredient Inventory + Adjustment History */}
       <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
         <div className="bg-[var(--brand-surface)] rounded-2xl border border-[var(--brand-border)] shadow-sm overflow-hidden">
@@ -463,18 +675,17 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
               <Plus size={16} /> Add Ingredient
             </button>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full">
+          <div className="data-table-wrap">
+            <table className="data-table">
               <thead className="bg-[var(--brand-muted)] border-b border-[var(--brand-border)]">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Ingredient</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Stock</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Alert</th>
                   <th className="px-6 py-3 text-right text-xs font-semibold text-[var(--brand-border)] uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--brand-border)]">
-                {ingredients.map(ingredient => {
+                {sortedIngredients.map(ingredient => {
                   const isLow = ingredient.currentStock <= ingredient.minStock;
                   return (
                     <tr key={ingredient.id} className="hover:bg-[var(--brand-muted)]/80 transition-colors">
@@ -482,7 +693,6 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                         <div className="font-medium text-[var(--brand-dark)]">{ingredient.name}</div>
                         <div className="text-xs text-[var(--brand-border)]">{ingredient.unit}</div>
                       </td>
-                      <td className="px-6 py-4 text-[var(--brand-text-dark)]">{ingredient.currentStock.toFixed(2)}</td>
                       <td className="px-6 py-4">
                         {isLow ? (
                           <span className="inline-flex items-center gap-1 rounded-full bg-[var(--brand-accent)]/20 text-[var(--brand-dark)] px-2 py-1 text-xs font-semibold">
@@ -526,7 +736,7 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                 })}
                 {ingredients.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-6 py-8 text-center text-[var(--brand-border)]">
+                    <td colSpan={3} className="px-6 py-8 text-center text-[var(--brand-border)]">
                       No ingredients configured yet.
                     </td>
                   </tr>
@@ -563,6 +773,8 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
           </div>
         </div>
       </div>
+      </>
+      )}
 
       {/* Add/Edit Product Modal */}
       {isModalOpen && (
@@ -583,7 +795,6 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                   <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Product Name</label>
                   <input 
                     type="text" 
-                    required
                     placeholder="e.g. Masala Chai"
                     className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] text-[var(--brand-text-dark)] bg-white"
                     value={formData.name}
@@ -603,12 +814,11 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                     </button>
                   </div>
                   <select
-                    required
                     className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] bg-white text-[var(--brand-text-dark)]"
                     value={formData.category}
                     onChange={e => setFormData({...formData, category: e.target.value})}
                   >
-                    <option value="" disabled>Select category</option>
+                    <option value="">Select category</option>
                     {categoryOptions.map(category => (
                       <option key={category} value={category}>{category}</option>
                     ))}
@@ -646,54 +856,97 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                     value={formData.unit}
                     onChange={e => setFormData({...formData, unit: e.target.value})}
                   >
-                    <option value="pcs">Pieces (pcs)</option>
-                    <option value="kg">Kilogram (kg)</option>
+                    {menuItemUnitOptions.map(unit => (
+                      <option key={unit} value={unit}>{unit}</option>
+                    ))}
                   </select>
                 </div>
                 
                 <div className="col-span-1">
-                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Selling Price (₹)</label>
+                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">
+                    {isPieceProduct ? 'Price Per Piece (₹)' : 'Selling Price (₹) for unit'}
+                  </label>
                   <input 
                     type="number" 
                     step="0.01"
-                    required
+                    min="0"
                     className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] text-[var(--brand-text-dark)] bg-white"
                     value={formData.price}
                     onChange={e => setFormData({...formData, price: e.target.value})}
                   />
                 </div>
                 <div className="col-span-1">
-                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Cost Price (₹)</label>
+                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">
+                    {isPieceProduct ? 'Cost Per Piece (₹)' : 'Cost Price (₹) for unit'}
+                  </label>
                   <input 
                     type="number" 
                     step="0.01"
-                    required
+                    min="0"
                     className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] text-[var(--brand-text-dark)] bg-white"
                     value={formData.cost}
                     onChange={e => setFormData({...formData, cost: e.target.value})}
                   />
                 </div>
 
-                <div className="col-span-1">
-                  <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Current Stock</label>
-                  <input 
-                    type="number" 
-                    required
-                    className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] text-[var(--brand-text-dark)] bg-white"
-                    value={formData.stock}
-                    onChange={e => setFormData({...formData, stock: e.target.value})}
-                  />
-                </div>
-                <div className="col-span-1">
+                <div className="col-span-2">
                   <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Alert Level</label>
                   <input 
                     type="number" 
-                    required
+                    min="0"
                     className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] text-[var(--brand-text-dark)] bg-white"
                     value={formData.minStock}
                     onChange={e => setFormData({...formData, minStock: e.target.value})}
                   />
                 </div>
+
+                {billingPricePreview.length > 0 && (
+                  <div className="col-span-2 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-muted)] p-4">
+                    {isPieceProduct ? (
+                      <>
+                        <p className="text-sm font-semibold text-[var(--brand-dark)] mb-1">
+                          Billing quick-select from {formatInventoryUnitPrice(parseFloat(formData.price || '0'), PIECE_UNIT)}
+                        </p>
+                        <p className="text-xs text-[var(--brand-border)] mb-3">
+                          Cashiers can tap 1–15 pieces during billing. Price per piece cannot be changed at checkout.
+                        </p>
+                        <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                          {billingPricePreview.map(({ count, amount, label }) => (
+                            <div
+                              key={count}
+                              className="rounded-lg border border-[var(--brand-border)] bg-white/80 px-3 py-2 text-center"
+                            >
+                              <div className="text-xs font-semibold text-[var(--brand-dark)]">{label}</div>
+                              <div className="text-xs text-[var(--brand-border)] mt-1">₹{amount.toFixed(2)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm font-semibold text-[var(--brand-dark)] mb-1">
+                          Billing auto-prices from {formatInventoryUnitPrice(parseFloat(formData.price || '0'), formData.unit)}
+                        </p>
+                        <p className="text-xs text-[var(--brand-border)] mb-3">
+                          These prices will appear automatically when billing this product.
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {billingPricePreview.map(({ unit, price, isInventoryUnit }) => (
+                            <div
+                              key={unit}
+                              className={`rounded-lg border px-3 py-2 text-center ${
+                                isInventoryUnit ? 'border-[var(--brand-dark)] bg-white' : 'border-[var(--brand-border)] bg-white/80'
+                              }`}
+                            >
+                              <div className="text-xs font-semibold text-[var(--brand-dark)]">{unit}</div>
+                              <div className="text-xs text-[var(--brand-border)] mt-1">₹{price.toFixed(2)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 <div className="col-span-2 pt-4">
                   <button type="submit" className="w-full bg-[var(--brand-dark)] text-[var(--brand-text-light)] py-3.5 rounded-xl font-medium hover:bg-[var(--brand-bg)] transition-colors shadow-md shadow-[var(--brand-border)]">
@@ -733,31 +986,17 @@ const Inventory: React.FC<InventoryProps> = ({ products, categories, ingredients
                         onChange={e => setIngredientForm({ ...ingredientForm, name: e.target.value })}
                       />
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Unit</label>
-                        <select
-                          className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] bg-white text-[var(--brand-text-dark)]"
-                          value={ingredientForm.unit}
-                          onChange={e => setIngredientForm({ ...ingredientForm, unit: e.target.value })}
-                        >
-                          {ALLOWED_UNITS.map(unit => (
-                            <option key={unit} value={unit}>{unit}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Current Stock</label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          required
-                          className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] text-[var(--brand-text-dark)] bg-white"
-                          value={ingredientForm.currentStock}
-                          onChange={e => setIngredientForm({ ...ingredientForm, currentStock: e.target.value })}
-                        />
-                      </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Unit</label>
+                      <select
+                        className="w-full px-4 py-3 rounded-xl border border-[var(--brand-border)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/20 focus:border-[var(--brand-accent)] bg-white text-[var(--brand-text-dark)]"
+                        value={ingredientForm.unit}
+                        onChange={e => setIngredientForm({ ...ingredientForm, unit: e.target.value })}
+                      >
+                        {ALLOWED_UNITS.map(unit => (
+                          <option key={unit} value={unit}>{unit}</option>
+                        ))}
+                      </select>
                     </div>
                     <div>
                       <label className="block text-sm font-semibold text-[var(--brand-dark)] mb-1.5">Minimum Stock Alert</label>
