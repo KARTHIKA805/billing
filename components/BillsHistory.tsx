@@ -1,9 +1,9 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { SaleRecord, Customer, UserRole, CartItem } from '../types';
-import { Clock, Eye, Pencil, Printer, Search, Trash2, X, MessageCircle } from 'lucide-react';
+import { Clock, Eye, Pencil, Printer, Search, Trash2, X } from 'lucide-react';
 import ReceiptPrintBlock from './ReceiptPrintBlock';
-import { formatPaymentLabel, shareReceiptOnWhatsApp } from '../utils/receiptFormat';
+import { formatPaymentLabel } from '../utils/receiptFormat';
 
 interface BillsHistoryProps {
   sales: SaleRecord[];
@@ -58,18 +58,6 @@ const BillsHistory: React.FC<BillsHistoryProps> = ({ sales, customers, userRole,
   const getDisplayCustomer = (sale: SaleRecord) => {
     if (sale.customerId) return customerNameById.get(sale.customerId) || 'Registered Customer';
     return sale.billLabel || sale.customerName || 'Walk-in Customer';
-  };
-
-  const getCustomerPhone = (sale: SaleRecord) => {
-    if (!sale.customerId) return undefined;
-    return customers.find((customer) => customer.id === sale.customerId)?.phone;
-  };
-
-  const handleShareWhatsApp = (sale: SaleRecord) => {
-    shareReceiptOnWhatsApp(sale, {
-      phone: getCustomerPhone(sale),
-      customerLabel: getDisplayCustomer(sale),
-    });
   };
 
   const openEdit = (sale: SaleRecord) => {
@@ -225,7 +213,6 @@ const BillsHistory: React.FC<BillsHistoryProps> = ({ sales, customers, userRole,
                     <div className="flex items-center justify-end gap-2">
                       <button onClick={() => setSelectedSale(sale)} className="p-2 rounded-lg border border-[var(--brand-border)] hover:bg-white" title="View"><Eye size={16} /></button>
                       <button onClick={() => printSale(sale)} className="p-2 rounded-lg border border-[var(--brand-border)] hover:bg-white" title="Print"><Printer size={16} /></button>
-                      <button onClick={() => handleShareWhatsApp(sale)} className="p-2 rounded-lg border border-[var(--brand-border)] hover:bg-white" title="Share on WhatsApp"><MessageCircle size={16} /></button>
                       {userRole === UserRole.ADMIN && (
                         <>
                           <button onClick={() => openEdit(sale)} className="p-2 rounded-lg border border-[var(--brand-border)] hover:bg-white" title="Edit"><Pencil size={16} /></button>
@@ -264,15 +251,7 @@ const BillsHistory: React.FC<BillsHistoryProps> = ({ sales, customers, userRole,
               </div>
               <p className="text-sm text-[var(--brand-border)]">Payment: {formatPaymentLabel(selectedSale)}</p>
             </div>
-            <div className="p-4 border-t border-[var(--brand-border)] flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => handleShareWhatsApp(selectedSale)}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
-              >
-                <MessageCircle size={16} />
-                WhatsApp
-              </button>
+            <div className="p-4 border-t border-[var(--brand-border)] flex justify-end">
               <button
                 type="button"
                 onClick={() => printSale(selectedSale)}

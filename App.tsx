@@ -29,7 +29,8 @@ import {
   deleteCustomer as apiDeleteCustomer,
   createSale as apiCreateSale,
   updateSale as apiUpdateSale,
-  voidSale as apiVoidSale
+  voidSale as apiVoidSale,
+  touchUserLastSignIn
 } from './services/supabaseService';
 import { ViewState, Product, SaleRecord, CartItem, Customer, DailyStat, UserRole, Category, Ingredient, InventoryAdjustment } from './types';
 import { MOCK_DAILY_STATS } from './constants';
@@ -55,6 +56,14 @@ const PageLoader = () => (
 );
 
 const DEMO_AUTH_STORAGE_KEY = 'suvai_demo_auth';
+
+const readStoredDemoRole = (): UserRole | null => {
+  const stored = sessionStorage.getItem(DEMO_AUTH_STORAGE_KEY);
+  if (stored === UserRole.ADMIN || stored === UserRole.EMPLOYEE) return stored;
+  return null;
+};
+
+const readCachedAppData = () => loadAppDataCache({ allowStale: true });
 
 // Login Component
 const Login = ({ onLogin }: { onLogin: (role: UserRole, isDemo?: boolean) => void }) => {
@@ -93,6 +102,9 @@ const Login = ({ onLogin }: { onLogin: (role: UserRole, isDemo?: boolean) => voi
         return;
       }
       const { data } = await getUser();
+      if (data.user?.id) {
+        await touchUserLastSignIn(data.user.id);
+      }
       const role = await getUserRole(data.user);
       onLogin(role, false);
 
@@ -158,22 +170,41 @@ const Login = ({ onLogin }: { onLogin: (role: UserRole, isDemo?: boolean) => voi
 };
 
 const App: React.FC = () => {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [userRole, setUserRole] = useState<UserRole | null>(null);
-  const [currentView, setCurrentView] = useState<ViewState>(ViewState.DASHBOARD);
+  const initialDemoRole = readStoredDemoRole();
+  const initialCache = initialDemoRole ? readCachedAppData() : null;
+
+  const [isLoggedIn, setIsLoggedIn] = useState(!!initialDemoRole);
+  const [isAuthLoading, setIsAuthLoading] = useState(!initialDemoRole);
+  const [userRole, setUserRole] = useState<UserRole | null>(initialDemoRole);
+  const [currentView, setCurrentView] = useState<ViewState>(
+    initialDemoRole === UserRole.EMPLOYEE ? ViewState.BILLING : ViewState.DASHBOARD
+  );
 
   // Data State
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [ingredients, setIngredients] = useState<Ingredient[]>([]);
-  const [inventoryAdjustments, setInventoryAdjustments] = useState<InventoryAdjustment[]>([]);
-  const [sales, setSales] = useState<SaleRecord[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [isLoadingData, setIsLoadingData] = useState(false);
+  const [products, setProducts] = useState<Product[]>(initialCache?.products ?? []);
+  const [categories, setCategories] = useState<Category[]>(initialCache?.categories ?? []);
+  const [ingredients, setIngredients] = useState<Ingredient[]>(initialCache?.ingredients ?? []);
+  const [inventoryAdjustments, setInventoryAdjustments] = useState<InventoryAdjustment[]>(
+    initialCache?.inventoryAdjustments ?? []
+  );
+  const [sales, setSales] = useState<SaleRecord[]>(initialCache?.sales ?? []);
+  const [customers, setCustomers] = useState<Customer[]>(initialCache?.customers ?? []);
+  const [isSyncingData, setIsSyncingData] = useState(false);
 
   // Dynamic stats derived from interactions
   const [notifications, setNotifications] = useState<{id: string, message: string}[]>([]);
+
+  const applyCachedData = (cached: ReturnType<typeof readCachedAppData>) => {
+    if (!cached?.products?.length) return false;
+
+    setProducts(cached.products);
+    setCategories(cached.categories);
+    setCustomers(cached.customers);
+    setIngredients(cached.ingredients);
+    setSales(cached.sales);
+    setInventoryAdjustments(cached.inventoryAdjustments);
+    return true;
+  };
 
   // Restore auth session on refresh
   useEffect(() => {
@@ -181,22 +212,28 @@ const App: React.FC = () => {
 
     const restoreSession = async () => {
       try {
-        const storedDemoRole = sessionStorage.getItem(DEMO_AUTH_STORAGE_KEY);
-        if (storedDemoRole === UserRole.ADMIN || storedDemoRole === UserRole.EMPLOYEE) {
+        const storedDemoRole = readStoredDemoRole();
+        if (storedDemoRole) {
           if (!isMounted) return;
+          applyCachedData(readCachedAppData());
           setUserRole(storedDemoRole);
           setIsLoggedIn(true);
           setCurrentView(storedDemoRole === UserRole.EMPLOYEE ? ViewState.BILLING : ViewState.DASHBOARD);
+          setIsAuthLoading(false);
           return;
         }
 
-        if (!supabase) return;
+        if (!supabase) {
+          if (isMounted) setIsAuthLoading(false);
+          return;
+        }
 
         const { data: { session } } = await supabase.auth.getSession();
         if (!session?.user) return;
 
         const quickRole = resolveUserRoleFromMetadata(session.user) ?? UserRole.ADMIN;
         if (!isMounted) return;
+        applyCachedData(readCachedAppData());
         setUserRole(quickRole);
         setIsLoggedIn(true);
         setCurrentView(quickRole === UserRole.EMPLOYEE ? ViewState.BILLING : ViewState.DASHBOARD);
@@ -232,6 +269,9 @@ const App: React.FC = () => {
 
       if (session?.user) {
         try {
+          if (event === 'SIGNED_IN') {
+            await touchUserLastSignIn(session.user.id);
+          }
           const role = await getUserRole(session.user);
           if (!isMounted) return;
           setUserRole(role);
@@ -252,23 +292,37 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const hydrateFromCache = () => {
-    const cached = loadAppDataCache();
-    if (!cached?.products?.length) return false;
+  const saveCurrentDataCache = (
+    data: {
+      products: Product[];
+      categories: Category[];
+      customers: Customer[];
+      ingredients: Ingredient[];
+      sales: SaleRecord[];
+      inventoryAdjustments: InventoryAdjustment[];
+    }
+  ) => {
+    saveAppDataCache(data);
+  };
 
-    setProducts(cached.products);
-    setCategories(cached.categories);
-    setCustomers(cached.customers);
-    setIngredients(cached.ingredients);
-    setSales(cached.sales);
-    setInventoryAdjustments(cached.inventoryAdjustments);
-    return true;
+  const fetchSecondaryData = async (prods: Product[]) => {
+    const [ings, adjustments, sls] = await Promise.all([
+      getIngredients(),
+      getInventoryAdjustments(),
+      getSales(prods),
+    ]);
+
+    setIngredients(ings);
+    setInventoryAdjustments(adjustments);
+    setSales(sls);
+
+    return { ings, adjustments, sls };
   };
 
   const fetchData = async (options?: { background?: boolean }) => {
     const hasCachedProducts = products.length > 0;
     const isBackground = options?.background ?? hasCachedProducts;
-    if (!isBackground) setIsLoadingData(true);
+    if (!isBackground) setIsSyncingData(true);
 
     try {
       const [prods, cats, custs] = await Promise.all([
@@ -281,38 +335,27 @@ const App: React.FC = () => {
       setCategories(cats);
       setCustomers(custs);
 
-      if (!isBackground) setIsLoadingData(false);
+      const secondary = await fetchSecondaryData(prods);
 
-      const [ings, adjustments, sls] = await Promise.all([
-        getIngredients(),
-        getInventoryAdjustments(),
-        getSales(prods),
-      ]);
-
-      setIngredients(ings);
-      setInventoryAdjustments(adjustments);
-      setSales(sls);
-
-      saveAppDataCache({
+      saveCurrentDataCache({
         products: prods,
         categories: cats,
         customers: custs,
-        ingredients: ings,
-        sales: sls,
-        inventoryAdjustments: adjustments,
+        ingredients: secondary.ings,
+        sales: secondary.sls,
+        inventoryAdjustments: secondary.adjustments,
       });
     } catch (error) {
       console.error("Failed to fetch data:", error);
     } finally {
-      setIsLoadingData(false);
+      setIsSyncingData(false);
     }
   };
 
   useEffect(() => {
     if (!isLoggedIn) return;
-    const hasCache = hydrateFromCache();
-    if (!hasCache) setIsLoadingData(true);
-    fetchData({ background: hasCache });
+    const hasCache = applyCachedData(readCachedAppData());
+    void fetchData({ background: hasCache });
   }, [isLoggedIn]);
 
   useEffect(() => {
@@ -388,7 +431,7 @@ const App: React.FC = () => {
       setProducts(prods);
       setCustomers(custs);
 
-      const cached = loadAppDataCache();
+      const cached = readCachedAppData();
       if (cached) {
         saveAppDataCache({
           ...cached,
@@ -594,11 +637,13 @@ const App: React.FC = () => {
   const handleLogin = (role: UserRole, isDemo = false) => {
     if (isDemo) {
       sessionStorage.setItem(DEMO_AUTH_STORAGE_KEY, role);
+      applyCachedData(readCachedAppData());
     } else {
       sessionStorage.removeItem(DEMO_AUTH_STORAGE_KEY);
     }
     setUserRole(role);
     setIsLoggedIn(true);
+    setIsAuthLoading(false);
     setCurrentView(role === UserRole.EMPLOYEE ? ViewState.BILLING : ViewState.DASHBOARD);
   };
 
@@ -615,17 +660,6 @@ const App: React.FC = () => {
 
   if (!isLoggedIn) {
     return <Login onLogin={handleLogin} />;
-  }
-
-  if (isLoadingData && products.length === 0) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[var(--brand-muted)] p-4">
-        <div className="flex flex-col items-center gap-4 bg-[var(--brand-surface)] border border-[var(--brand-border)] rounded-3xl shadow-xl p-8">
-          <Loader2 className="animate-spin text-[var(--brand-dark)]" size={48} />
-          <p className="text-[var(--brand-text-dark)] font-medium">Loading Bakery Data...</p>
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -647,6 +681,12 @@ const App: React.FC = () => {
       notifications={notifications}
       userRole={userRole ?? UserRole.ADMIN}
     >
+      {isSyncingData && products.length === 0 && (
+        <div className="mx-3 sm:mx-4 md:mx-6 mt-2 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-surface)] px-4 py-2 text-sm text-[var(--brand-dark)] flex items-center gap-2">
+          <Loader2 className="animate-spin shrink-0" size={16} />
+          Syncing latest products...
+        </div>
+      )}
       <Suspense fallback={<PageLoader />}>
         {currentView === ViewState.DASHBOARD && (
           userRole === UserRole.EMPLOYEE ? (

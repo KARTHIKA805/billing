@@ -86,3 +86,32 @@ alter table inventory_adjustments
 -- Split payment support on sales
 alter table sales add column if not exists cash_paid numeric default 0;
 alter table sales add column if not exists upi_paid numeric default 0;
+
+-- Track last sign in on user profiles (also synced from auth.users via get_admin_users)
+alter table user_profiles add column if not exists last_sign_in_at timestamp with time zone;
+
+create or replace function public.get_admin_users()
+returns table (
+  id uuid,
+  email text,
+  role text,
+  created_at timestamptz,
+  last_sign_in_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    p.id,
+    p.email,
+    p.role,
+    p.created_at,
+    coalesce(u.last_sign_in_at, p.last_sign_in_at) as last_sign_in_at
+  from public.user_profiles p
+  left join auth.users u on u.id = p.id
+  order by p.created_at desc;
+$$;
+
+grant execute on function public.get_admin_users() to authenticated;
+grant execute on function public.get_admin_users() to anon;

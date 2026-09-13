@@ -69,15 +69,6 @@ const sections = [
     ],
   },
   {
-    title: 'WhatsApp receipt',
-    steps: [
-      'After payment: tap WhatsApp on the success screen.',
-      'Bills History also has a WhatsApp button per bill.',
-      'If the customer is registered, their phone is pre-filled.',
-      'Otherwise WhatsApp opens so you can pick a contact.',
-    ],
-  },
-  {
     title: 'Loyalty customer',
     steps: [
       'Search customer by name or phone in the cart panel.',

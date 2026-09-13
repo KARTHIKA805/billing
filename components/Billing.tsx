@@ -1,11 +1,11 @@
 import { FC, useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Product, CartItem, Customer, NewSalePayload, SaleRecord, PrintMode, PaymentMethod } from '../types';
-import { Search, Plus, Minus, CheckCircle, ShoppingBag, User, X, Award, Smartphone, Banknote, Printer, HelpCircle, PauseCircle, MessageCircle, RotateCcw, Split } from 'lucide-react';
+import { Search, Plus, Minus, CheckCircle, ShoppingBag, User, X, Award, Smartphone, Banknote, Printer, HelpCircle, PauseCircle, RotateCcw, Split } from 'lucide-react';
 import BillingHelpSheet from './BillingHelpSheet';
 import ReceiptPrintBlock from './ReceiptPrintBlock';
 import { SHOP_QR_CODE_URL, getPriceForWeight, getCostForWeight, getCartLineId, getWeightPriceBreakdown, formatInventoryUnitPrice, isPieceUnit, PIECE_UNIT, getPieceBillingOptions, getPieceCartLineId } from '../constants';
-import { formatReceiptId, shareReceiptOnWhatsApp } from '../utils/receiptFormat';
+import { formatReceiptId } from '../utils/receiptFormat';
 import { loadHeldBills, addHeldBill, removeHeldBill, HeldBillSession } from '../utils/heldBills';
 
 interface BillingProps {
@@ -636,19 +636,6 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, salesToday
     Math.abs(splitCashParsed + splitUpiParsed - finalTotal) < 0.01
   );
 
-  const handleShareWhatsApp = (bill: CompletedBill) => {
-    const label = bill.sale.billLabel || bill.sale.customerName || 'Walk-in Customer';
-    const phone = bill.sale.customerId
-      ? customers.find((customer) => customer.id === bill.sale.customerId)?.phone
-      : undefined;
-    shareReceiptOnWhatsApp(bill.sale, {
-      phone,
-      customerLabel: label,
-      cashReceived: bill.cashReceived,
-      changeDue: bill.changeDue,
-    });
-  };
-
   if (checkoutStep === 'success') {
     const printedCount = printMode === 'skip' ? 0 : resolvePrintSaleIds().length;
 
@@ -684,24 +671,14 @@ const Billing: FC<BillingProps> = ({ products, customers, categories, salesToday
                     {wasPrinted ? ' • Printed' : printMode === 'skip' ? ' • Not printed' : ''}
                   </p>
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => handleShareWhatsApp(bill)}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
-                  >
-                    <MessageCircle size={14} />
-                    WhatsApp
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => printReceipt([bill.sale.id])}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
-                  >
-                    <Printer size={14} />
-                    Reprint
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => printReceipt([bill.sale.id])}
+                  className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg border border-[var(--brand-border)] text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--brand-muted)]"
+                >
+                  <Printer size={14} />
+                  Reprint
+                </button>
               </div>
             );
           })}

@@ -838,11 +838,41 @@ export const voidSale = async (sale: SaleRecord) => {
 };
 
 // User Management
+export const touchUserLastSignIn = async (userId: string) => {
+    if (!supabase || !userId) return;
+
+    const now = new Date().toISOString();
+    const { error } = await supabase
+        .from('user_profiles')
+        .update({
+            last_sign_in_at: now,
+            updated_at: now,
+        })
+        .eq('id', userId);
+
+    if (error) {
+        console.warn('Failed to update last sign in:', error);
+    }
+};
+
 export const getAdminUsers = async () => {
     if (!supabase) throw new Error('Supabase not initialized');
-    // In client/browser contexts we cannot call admin endpoints (they require
-    // a service_role key). Use the `user_profiles` table as the source of
-    // truth for user listings to avoid 403 responses from the admin API.
+
+    const { data: rpcData, error: rpcError } = await supabase.rpc('get_admin_users');
+    if (!rpcError && rpcData) {
+        return (rpcData || []).map((profile: any) => ({
+            id: profile.id,
+            email: profile.email,
+            user_metadata: { role: profile.role },
+            created_at: profile.created_at,
+            last_sign_in_at: profile.last_sign_in_at ?? null,
+        }));
+    }
+
+    if (rpcError) {
+        console.warn('get_admin_users RPC unavailable, falling back to user_profiles:', rpcError.message);
+    }
+
     const { data, error } = await supabase
         .from('user_profiles')
         .select('*')
@@ -853,7 +883,7 @@ export const getAdminUsers = async () => {
         email: profile.email,
         user_metadata: { role: profile.role },
         created_at: profile.created_at,
-        last_sign_in_at: profile.last_sign_in_at ?? null
+        last_sign_in_at: profile.last_sign_in_at ?? null,
     }));
 };
 
@@ -886,11 +916,12 @@ export const createAdminUser = async (email: string, password: string, userMetad
 
     if (error) throw error;
     if (data.user) {
-        await supabase.from('user_profiles').upsert({
+        const profilePayload: Record<string, unknown> = {
             id: data.user.id,
             email,
-            role
-        });
+            role,
+        };
+        await supabase.from('user_profiles').upsert(profilePayload);
     }
     // Attempt a client-side sign-in test for the newly created user using an
     // isolated Supabase client with noop storage to avoid interference with the
@@ -913,6 +944,9 @@ export const createAdminUser = async (email: string, password: string, userMetad
             signInTest = { success: false, error: signinError.message || String(signinError) };
         } else if (signinData?.session) {
             signInTest = { success: true };
+            if (data.user?.id) {
+                await touchUserLastSignIn(data.user.id);
+            }
         }
     } catch (err: any) {
         signInTest = { success: false, error: err?.message || String(err) };

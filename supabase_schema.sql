@@ -17,7 +17,8 @@ create table if not exists user_profiles (
   email text not null unique,
   role text not null default 'employee' check (role in ('admin', 'employee')),
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  last_sign_in_at timestamp with time zone
 );
 
 -- Create Products Table
@@ -182,3 +183,29 @@ create policy "Allow all access to inventory_adjustments"
   to public
   using (true)
   with check (true);
+
+create or replace function public.get_admin_users()
+returns table (
+  id uuid,
+  email text,
+  role text,
+  created_at timestamptz,
+  last_sign_in_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    p.id,
+    p.email,
+    p.role,
+    p.created_at,
+    coalesce(u.last_sign_in_at, p.last_sign_in_at) as last_sign_in_at
+  from public.user_profiles p
+  left join auth.users u on u.id = p.id
+  order by p.created_at desc;
+$$;
+
+grant execute on function public.get_admin_users() to authenticated;
+grant execute on function public.get_admin_users() to anon;

@@ -359,6 +359,101 @@ html, body, #root {
   height: 100dvh;
 }
 
+body.mobile-menu-open {
+  overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+.mobile-nav-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgb(88 18 27 / 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease-out;
+}
+
+.mobile-nav-overlay--open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.mobile-nav-drawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 50;
+  width: min(17rem, 88vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--brand-dark);
+  box-shadow: 0 10px 40px rgb(0 0 0 / 0.25);
+  transform: translate3d(-105%, 0, 0);
+  visibility: hidden;
+  pointer-events: none;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.15s;
+  will-change: transform;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.mobile-nav-drawer--open {
+  transform: translate3d(0, 0, 0);
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.mobile-menu-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  border-radius: 0.75rem;
+  color: var(--brand-dark);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-menu-button:active {
+  background: var(--brand-muted);
+}
+
+.mobile-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.875rem 1rem;
+  border-radius: 1rem;
+  text-align: left;
+  color: var(--brand-text-light);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.mobile-nav-item:active {
+  transform: scale(0.98);
+}
+
+.mobile-nav-item--active {
+  background: var(--brand-surface);
+  color: var(--brand-dark);
+}
+
+.mobile-nav-item--active svg {
+  color: var(--brand-dark);
+}
+
+@media (min-width: 768px) {
+  .mobile-nav-overlay,
+  .mobile-nav-drawer {
+    display: none !important;
+  }
+}
+
 .app-page {
   min-height: 0;
   flex: 1 1 auto;

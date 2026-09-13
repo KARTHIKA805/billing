@@ -7,8 +7,15 @@ interface AdminUser {
   email: string;
   role: string;
   created_at: string;
-  last_sign_in_at?: string;
+  last_sign_in_at?: string | null;
 }
+
+const formatUserDateTime = (value?: string | null) => {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Never';
+  return date.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+};
 
 const Users: React.FC = () => {
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -37,9 +44,9 @@ const Users: React.FC = () => {
       setUsers(data.map((user: any) => ({
         id: user.id,
         email: user.email,
-        role: user.user_metadata?.role || 'admin',
+        role: user.user_metadata?.role || 'employee',
         created_at: user.created_at,
-        last_sign_in_at: user.last_sign_in_at
+        last_sign_in_at: user.last_sign_in_at ?? null,
       })));
     } catch (err: any) {
       // This error is expected if using client-side auth
@@ -242,14 +249,12 @@ const Users: React.FC = () => {
                     </td>
                     <td className="px-6 py-4">
                       <span className="text-[var(--brand-border)] text-sm">
-                        {new Date(user.created_at).toLocaleDateString()}
+                        {formatUserDateTime(user.created_at)}
                       </span>
                     </td>
                     <td className="px-6 py-4">
                       <span className="text-[var(--brand-border)] text-sm">
-                        {user.last_sign_in_at
-                          ? new Date(user.last_sign_in_at).toLocaleDateString()
-                          : 'Never'}
+                        {formatUserDateTime(user.last_sign_in_at)}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">

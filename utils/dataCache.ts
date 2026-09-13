@@ -38,26 +38,30 @@ const reviveAdjustment = (adjustment: InventoryAdjustment): InventoryAdjustment 
   createdAt: new Date(adjustment.createdAt),
 });
 
-export const loadAppDataCache = (): AppDataCache | null => {
+const parseAppDataCache = (parsed: AppDataCache): AppDataCache => ({
+  ...parsed,
+  products: (parsed.products || []).map(reviveProduct),
+  categories: parsed.categories || [],
+  customers: (parsed.customers || []).map(reviveCustomer),
+  ingredients: (parsed.ingredients || []).map(reviveIngredient),
+  sales: (parsed.sales || []).map(reviveSale),
+  inventoryAdjustments: (parsed.inventoryAdjustments || []).map(reviveAdjustment),
+});
+
+export const loadAppDataCache = (options?: { allowStale?: boolean }): AppDataCache | null => {
   try {
     const raw = sessionStorage.getItem(CACHE_KEY);
     if (!raw) return null;
 
     const parsed = JSON.parse(raw) as AppDataCache;
-    if (!parsed?.timestamp || Date.now() - parsed.timestamp > CACHE_TTL_MS) {
-      sessionStorage.removeItem(CACHE_KEY);
+    if (!parsed?.timestamp) return null;
+
+    const isExpired = Date.now() - parsed.timestamp > CACHE_TTL_MS;
+    if (isExpired && !options?.allowStale) {
       return null;
     }
 
-    return {
-      ...parsed,
-      products: (parsed.products || []).map(reviveProduct),
-      categories: parsed.categories || [],
-      customers: (parsed.customers || []).map(reviveCustomer),
-      ingredients: (parsed.ingredients || []).map(reviveIngredient),
-      sales: (parsed.sales || []).map(reviveSale),
-      inventoryAdjustments: (parsed.inventoryAdjustments || []).map(reviveAdjustment),
-    };
+    return parseAppDataCache(parsed);
   } catch {
     sessionStorage.removeItem(CACHE_KEY);
     return null;
